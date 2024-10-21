@@ -146,6 +146,16 @@ ChatBot chatBot;
 bool shouldSubmitInput = false;
 
 /**
+ * @brief Global flag to control padding for X-axis alignment.
+ */
+static const float framePaddingX = 10.0f;
+
+/**
+ * @brief Global flag to control padding for Y-axis alignment.
+ */
+static const float framePaddingY = 10.0f;
+
+/**
  * @brief Pushes an ID and sets the colors for the ImGui context based on the message type.
  * 
  * This function sets the ImGui ID and style colors for the background and text
@@ -157,10 +167,10 @@ bool shouldSubmitInput = false;
 void pushIDAndColors(const Message &msg, int index) {
     ImGui::PushID(index);
 
-    ImVec4 userColor = ImVec4(0.1f, 0.6f, 0.9f, 1.0f); // Light blue for user
-    ImVec4 botColor = ImVec4(0.2f, 0.2f, 0.2f, 1.0f);  // Dark gray for bot
+    ImVec4 userColor = ImVec4(47/255.0f, 47/255.0f, 47/255.0f, 1.0f); // #2f2f2f for user
+    ImVec4 transparentColor = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);         // Transparent for bot
 
-    ImVec4 bgColor = msg.isUserMessage() ? userColor : botColor;
+    ImVec4 bgColor = msg.isUserMessage() ? userColor : transparentColor;
     ImGui::PushStyleColor(ImGuiCol_ChildBg, bgColor);
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 1.0f, 1.0f, 1.0f)); // White text
 }
@@ -190,23 +200,16 @@ std::tuple<float, float, float, float> calculateDimensions(const Message &msg) {
 }
 
 /**
- * @brief Renders a message bubble with the given message content.
+ * @brief Renders the message content inside the bubble.
  * 
- * This function creates a visual bubble for a message, calculating the necessary
- * dimensions based on the content and specified padding. It uses ImGui for rendering.
+ * This function sets up the text wrapping and positions the cursor
+ * appropriately to render the message content.
  * 
  * @param msg The message object containing the content to be displayed.
- * @param index The index of the message, used to create a unique identifier for the ImGui child window.
  * @param bubbleWidth The width of the message bubble.
  * @param bubblePadding The padding inside the message bubble.
  */
-void renderMessageBubble(const Message &msg, int index, float bubbleWidth, float bubblePadding) {
-    ImVec2 textSize = ImGui::CalcTextSize(msg.getContent().c_str(), NULL, true, bubbleWidth - bubblePadding * 2);
-    float estimatedHeight = textSize.y + bubblePadding * 2 + ImGui::GetTextLineHeightWithSpacing(); // Add padding and spacing for buttons
-
-    ImGui::BeginGroup();
-    ImGui::BeginChild(("MessageCard" + std::to_string(index)).c_str(), ImVec2(bubbleWidth, estimatedHeight), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
-
+void renderMessageContent(const Message &msg, float bubbleWidth, float bubblePadding) {
     ImGui::SetCursorPosX(bubblePadding);
     ImGui::SetCursorPosY(bubblePadding);
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + bubbleWidth - (bubblePadding * 2));
@@ -285,14 +288,30 @@ void renderMessage(const Message &msg, int index) {
 
     auto [windowWidth, bubbleWidth, bubblePadding, paddingX] = calculateDimensions(msg);
 
+    // Calculate the estimated height for the child window
+    ImVec2 textSize = ImGui::CalcTextSize(msg.getContent().c_str(), NULL, true, bubbleWidth - bubblePadding * 2);
+    float estimatedHeight = textSize.y + bubblePadding * 2 + ImGui::GetTextLineHeightWithSpacing(); // Add padding and spacing for buttons
+
     ImGui::SetCursorPosX(paddingX);
 
-    renderMessageBubble(msg, index, bubbleWidth, bubblePadding);
+    // Set rounding if user message
+    if (msg.isUserMessage()) {
+        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 10.0f); // Adjust the rounding as desired
+    }
+
+    ImGui::BeginGroup();
+    ImGui::BeginChild(("MessageCard" + std::to_string(index)).c_str(), ImVec2(bubbleWidth, estimatedHeight), false, ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoScrollWithMouse);
+
+    renderMessageContent(msg, bubbleWidth, bubblePadding);
     renderTimestamp(msg, bubblePadding);
     renderButtons(msg, index, bubbleWidth, bubblePadding);
 
     ImGui::EndChild();
     ImGui::EndGroup();
+
+    if (msg.isUserMessage()) {
+        ImGui::PopStyleVar(); // Pop ChildRounding
+    }
 
     ImGui::PopStyleColor(2); // Pop Text and ChildBg colors
     ImGui::PopID();
@@ -340,9 +359,9 @@ void renderChatHistory(const ChatHistory &chatHistory, bool &autoScroll)
  */
 void setInputFieldStyle()
 {
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 12.0f);                    // Rounded corners
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(10, 10));            // Padding inside input field
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.15f, 0.15f, 0.15f, 1.0f)); // Background color of the input field
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, 12.0f);                                // Rounded corners
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(framePaddingX, framePaddingY));  // Padding inside input field
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, ImVec4(0.15f, 0.15f, 0.15f, 1.0f));             // Background color of the input field
 }
 
 /**
@@ -391,15 +410,20 @@ void handleInputSubmission(char *inputText, bool &focusInputField)
  * 
  * This function calculates the position for the placeholder text, adds padding,
  * and renders the placeholder text in a light gray color.
+ * 
+ * @param inputHeight The height of the input field to properly adjust placeholder position.
  */
-void renderPlaceholderText()
+void renderPlaceholderText(float inputHeight)
 {
     ImVec2 cursorPos = ImGui::GetItemRectMin(); // Get the minimum coordinates of the item rectangle
     ImVec2 itemSize = ImGui::GetItemRectSize(); // Get the size of the item rectangle
 
-    ImVec2 placeholderPadding = ImVec2(10.0f, 15.0f); // Padding for the placeholder text
+    // Adjust the padding for the placeholder based on the dynamic input height
+    float verticalPadding = (inputHeight - 18.0f) / 2.0f; // Adjust the vertical padding dynamically
+    ImVec2 placeholderPadding = ImVec2(10.0f, verticalPadding); // Add padding for text centering
 
-    ImGui::SetCursorPos(ImVec2(cursorPos.x + placeholderPadding.x, cursorPos.y + placeholderPadding.y)); // Set cursor position with padding
+    // Set cursor position to the correct place for the placeholder text
+    ImGui::SetCursorPos(ImVec2(cursorPos.x + placeholderPadding.x, cursorPos.y + placeholderPadding.y));
 
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f)); // Set text color to light gray
     ImGui::TextUnformatted("Type a message and press Enter to send (Ctrl+Enter for new line)"); // Render placeholder text
@@ -407,15 +431,20 @@ void renderPlaceholderText()
 }
 
 /**
- * @brief Renders a custom input field with a rounded submit button in the chat application.
- * 
- * This function sets up and renders a multi-line input field for user text input. It handles
- * the focus state of the input field, processes input submission, and displays placeholder text
- * when the input field is empty.
+ * @brief Renders a custom input field with text wrapping, no horizontal scrolling, 
+ *        centered horizontally, with adjustable width, height, and placeholder padding.
  * 
  * @param focusInputField A reference to the focus input field flag. If true, the input field will be focused.
+ * @param inputHeight The height of the input field. Allows dynamic height adjustment.
+ * @param maxInputWidth The maximum width of the input field. Ensures the input field does not exceed a certain width.
+ * @param placeholderPaddingX Horizontal padding for the placeholder text.
+ * @param placeholderPaddingY Vertical padding for the placeholder text.
  */
-void renderInputField(bool &focusInputField)
+void renderInputField(bool &focusInputField,
+                      float inputHeight = 100.0f,
+                      float maxInputWidth = 750.0f,
+                      float placeholderPaddingX = 0.0f,
+                      float placeholderPaddingY = 0.0f)
 {
     setInputFieldStyle();
 
@@ -429,14 +458,33 @@ void renderInputField(bool &focusInputField)
         focusInputField = false;
     }
 
-    // Define flags for InputTextMultiline: Enter submits the message, Ctrl+Enter adds a new line
-    ImGuiInputTextFlags flags = ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine;
+    // Define flags for InputTextMultiline
+    // TODO: need to be able to disable horizontal scrolling and enable text wrapping
+    ImGuiInputTextFlags flags = ImGuiInputTextFlags_EnterReturnsTrue |
+                                ImGuiInputTextFlags_CtrlEnterForNewLine;
+
+    // Get the available width of the window to calculate horizontal centering
+    float availableWidth = ImGui::GetContentRegionAvail().x;
+    float inputWidth = std::min(maxInputWidth, availableWidth); // Ensure the input doesn't exceed the available width
+
+    // Calculate the X position to center the input field
+    float paddingX = (availableWidth - inputWidth) / 2.0f;
+    if (paddingX > 0.0f)
+    {
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + paddingX); // Center horizontally
+    }
+
+    // Save the cursor position (input field position)
+    ImVec2 inputFieldPos = ImGui::GetCursorScreenPos();
+
+    // Set the size of the input box with adjustable height
+    ImVec2 inputSize = ImVec2(inputWidth, inputHeight); // Input height is now adjustable
 
     // Check if the input text is empty (before rendering the input box)
     bool isEmpty = (strlen(inputText) == 0);
 
     // Create multi-line input field
-    if (ImGui::InputTextMultiline("##input", inputText, IM_ARRAYSIZE(inputText), ImVec2(-1.0f, 60.0f), flags))
+    if (ImGui::InputTextMultiline("##input", inputText, IM_ARRAYSIZE(inputText), inputSize, flags))
     {
         handleInputSubmission(inputText, focusInputField);
     }
@@ -444,7 +492,27 @@ void renderInputField(bool &focusInputField)
     // If the input text is empty, show the placeholder even when the input is focused
     if (isEmpty)
     {
-        renderPlaceholderText();
+        // Get the style and calculate the position for the placeholder text
+        const ImGuiStyle& style = ImGui::GetStyle();
+
+        // Adjust the placeholder position based on frame padding and user-defined padding
+        ImVec2 textPos = inputFieldPos;
+        textPos.x += style.FramePadding.x + placeholderPaddingX;
+        textPos.y += style.FramePadding.y + placeholderPaddingY;
+
+        // Set the cursor position for the placeholder text
+        ImGui::SetCursorScreenPos(textPos);
+
+        // Set the text color to a lighter shade for the placeholder
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.6f, 0.6f, 0.6f, 1.0f)); // Light gray
+
+        // Render the placeholder text
+        ImGui::TextUnformatted("Type a message and press Enter to send (Ctrl+Enter for new line)");
+
+        ImGui::PopStyleColor();
+
+        // Reset the cursor position after rendering the placeholder
+        ImGui::SetCursorScreenPos(inputFieldPos);
     }
 
     restoreInputFieldStyle();
@@ -459,8 +527,9 @@ void renderInputField(bool &focusInputField)
  * 
  * @param autoScroll A boolean reference to control automatic scrolling of the chat history.
  * @param focusInputField A boolean reference to control the focus state of the input field.
+ * @param inputHeight The height of the input field. Ensures consistent layout.
  */
-void renderChatWindow(bool &autoScroll, bool &focusInputField)
+void renderChatWindow(bool &autoScroll, bool &focusInputField, float inputHeight)
 {
     // Get ImGui IO
     ImGuiIO &io = ImGui::GetIO();
@@ -474,19 +543,30 @@ void renderChatWindow(bool &autoScroll, bool &focusInputField)
                                     ImGuiWindowFlags_NoResize |
                                     ImGuiWindowFlags_NoMove |
                                     ImGuiWindowFlags_NoCollapse |
-                                    ImGuiWindowFlags_NoScrollbar |
-                                    ImGuiWindowFlags_NoBringToFrontOnFocus;
+                                    ImGuiWindowFlags_NoBringToFrontOnFocus |
+                                    ImGuiWindowFlags_NoScrollbar |         // No scrollbar for main window
+                                    ImGuiWindowFlags_NoScrollWithMouse;    // Prevent scrolling of the main window
 
     // Begin the ImGui window with the specified flags
     ImGui::Begin("Chatbot", nullptr, window_flags);
 
-    // Render chat history and input field
+    // Define the height reserved for the input field
+    float inputFieldHeight = inputHeight; // Use the same inputHeight as in renderInputField
+    float bottomMargin = 10.0f;     // Add a margin at the bottom to prevent cropping
+
+    // Render the chat history as a scrollable region without borders
+    ImGui::BeginChild("ScrollingRegion", ImVec2(0, -inputFieldHeight - bottomMargin), false, ImGuiWindowFlags_HorizontalScrollbar);
     renderChatHistory(chatBot.getChatHistory(), autoScroll);
-    renderInputField(focusInputField);
+    ImGui::EndChild();
+
+    // Render the input field separately (outside the scrollable region)
+    ImGui::SetCursorPosY(ImGui::GetWindowHeight() - inputFieldHeight - bottomMargin); // Place the input field at the bottom with margin
+    renderInputField(focusInputField, inputHeight); // Pass inputHeight to renderInputField
 
     // End the ImGui window
     ImGui::End();
 }
+
 
 /**
  * @brief Initializes the GLFW library.
@@ -582,11 +662,12 @@ void setupImGui(GLFWwindow* window)
     ImGui_ImplGlfw_InitForOpenGL(window, true);
     ImGui_ImplOpenGL3_Init("#version 330");
 
+    // Setup clipboard functions for ImGui
     io.SetClipboardTextFn = [](void* user_data, const char* text)
     { glfwSetClipboardString((GLFWwindow*)user_data, text); };
     io.GetClipboardTextFn = [](void* user_data)
     { return glfwGetClipboardString((GLFWwindow*)user_data); };
-    io.ClipboardUserData = window;
+    io.ClipboardUserData = window; // Set the window as user data for clipboard access
 }
 
 /**
@@ -601,6 +682,7 @@ void mainLoop(GLFWwindow* window)
 {
     bool focusInputField = true;
     bool autoScroll = true;
+    float inputHeight = 100.0f; // Set your desired input field height here
 
     while (!glfwWindowShouldClose(window))
     {
@@ -612,8 +694,8 @@ void mainLoop(GLFWwindow* window)
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        // Render the chat window
-        renderChatWindow(autoScroll, focusInputField);
+        // Render the chat window, passing the inputHeight
+        renderChatWindow(autoScroll, focusInputField, inputHeight);
 
         // Render ImGui frame
         ImGui::Render();
