@@ -1,6 +1,6 @@
 /**
  * @file main.cpp
- * @brief A simple chat application using ImGui and GLFW with OpenGL.
+ * @brief Kolosal AI dekstop application using ImGui and GLFW with OpenGL.
  * 
  * This application demonstrates a chat interface where users can input messages,
  * and a simple bot responds to those messages. The chat interface includes features

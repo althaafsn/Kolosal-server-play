@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.10)
-project(ImGuiChatbot)
+project(KolosalDesktop)
 set(CMAKE_CXX_STANDARD 17)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
@@ -35,10 +35,10 @@ set(IMGUI_SOURCES
 )
 
 # Create executable
-add_executable(ImGuiChatbot main.cpp ${IMGUI_SOURCES})
+add_executable(KolosalDesktop main.cpp ${IMGUI_SOURCES})
 
 # Include directories
-target_include_directories(ImGuiChatbot PRIVATE
+target_include_directories(KolosalDesktop PRIVATE
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
     ${OPENGL_INCLUDE_DIR}
@@ -46,14 +46,14 @@ target_include_directories(ImGuiChatbot PRIVATE
 )
 
 # Link libraries
-target_link_libraries(ImGuiChatbot PRIVATE
+target_link_libraries(KolosalDesktop PRIVATE
     glfw
     ${OPENGL_LIBRARIES}
     glad
 )
 
 # Add compile definitions for ImGui
-target_compile_definitions(ImGuiChatbot PRIVATE
+target_compile_definitions(KolosalDesktop PRIVATE
     IMGUI_IMPL_OPENGL_LOADER_GLAD
 )
 
@@ -62,12 +62,12 @@ set(FONT_FILE "${CMAKE_SOURCE_DIR}/external/fonts/Inter-Regular.ttf")
 
 # Add custom command to copy the font to the build directory
 add_custom_command(
-    TARGET ImGuiChatbot POST_BUILD
+    TARGET KolosalDesktop POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_if_different
-    "${FONT_FILE}" "$<TARGET_FILE_DIR:ImGuiChatbot>/Inter-Regular.ttf"
+    "${FONT_FILE}" "$<TARGET_FILE_DIR:KolosalDesktop>/Inter-Regular.ttf"
 )
 
 # Define the font path relative to the executable
-target_compile_definitions(ImGuiChatbot PRIVATE
+target_compile_definitions(KolosalDesktop PRIVATE
     IMGUI_FONT_PATH="Inter-Regular.ttf"
 )
