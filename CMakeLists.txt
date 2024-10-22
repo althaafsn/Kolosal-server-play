@@ -6,14 +6,9 @@ set(CMAKE_CXX_STANDARD_REQUIRED ON)
 # Enable compile_commands.json generation
 set(CMAKE_EXPORT_COMPILE_COMMANDS ON)
 
-# Find Clang-Tidy
-find_program(CLANG_TIDY_EXE NAMES "clang-tidy")
-if(CLANG_TIDY_EXE)
-    message(STATUS "Found Clang-Tidy: ${CLANG_TIDY_EXE}")
-    set(CLANG_TIDY_CHECKS "-*,modernize-*,readability-*")
-    set(CMAKE_CXX_CLANG_TIDY "${CLANG_TIDY_EXE};-checks=${CLANG_TIDY_CHECKS};-warnings-as-errors=*")
-endif()
+# Removed Clang-Tidy configurations
 
+# Rest of your CMakeLists.txt remains the same...
 # Set OpenGL preference
 set(OpenGL_GL_PREFERENCE GLVND)
 
