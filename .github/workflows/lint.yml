@@ -43,4 +43,5 @@ jobs:
       run: |
         cd build
         wget https://raw.githubusercontent.com/llvm/llvm-project/main/clang-tools-extra/clang-tidy/tool/run-clang-tidy.py
-        python3 run-clang-tidy.py -p . -j $(nproc) -exclude '^.*/external/.*'
+        FILES=$(find ../ -path ../external -prune -o -name '*.cpp' -print)
+        python3 run-clang-tidy.py -p . -j $(nproc) $FILES
