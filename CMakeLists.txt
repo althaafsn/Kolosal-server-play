@@ -14,10 +14,15 @@ if(CLANG_TIDY_EXE)
     set(CMAKE_CXX_CLANG_TIDY "${CLANG_TIDY_EXE};-checks=${CLANG_TIDY_CHECKS};-warnings-as-errors=*")
 endif()
 
+# Set OpenGL preference
+set(OpenGL_GL_PREFERENCE GLVND)
+
 # Find OpenGL
 find_package(OpenGL REQUIRED)
-if(NOT OPENGL_FOUND)
+if(NOT OpenGL_FOUND)
     message(FATAL_ERROR "OpenGL not found")
+else()
+    message(STATUS "Found OpenGL: ${OpenGL_INCLUDE_DIR}")
 endif()
 
 # GLFW options
