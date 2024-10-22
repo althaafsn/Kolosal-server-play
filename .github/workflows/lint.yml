@@ -16,13 +16,12 @@ jobs:
     - name: Install Dependencies
       run: |
         sudo apt-get update
-        sudo apt-get install -y clang-tidy
+        sudo apt-get install -y clang-tidy cmake libgl1-mesa-dev xorg-dev
 
-    - name: Configure and Build
+    - name: Configure the project
       run: |
         mkdir build && cd build
         cmake -DCMAKE_EXPORT_COMPILE_COMMANDS=ON ..
-        make -j
 
     - name: Run Clang-Tidy
       run: |

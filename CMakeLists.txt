@@ -16,6 +16,9 @@ endif()
 
 # Find OpenGL
 find_package(OpenGL REQUIRED)
+if(NOT OPENGL_FOUND)
+    message(FATAL_ERROR "OpenGL not found")
+endif()
 
 # GLFW options
 set(GLFW_BUILD_DOCS OFF CACHE BOOL "" FORCE)
