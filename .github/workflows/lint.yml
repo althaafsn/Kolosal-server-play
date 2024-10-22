@@ -25,7 +25,7 @@ jobs:
         wget https://github.com/Kitware/CMake/releases/download/v3.27.5/cmake-3.27.5-linux-x86_64.sh
         sudo mkdir /opt/cmake
         sudo sh cmake-3.27.5-linux-x86_64.sh --prefix=/opt/cmake --skip-license
-        sudo ln -s /opt/cmake/bin/* /usr/local/bin/
+        sudo ln -sf /opt/cmake/bin/* /usr/local/bin/
 
     - name: Configure the project
       run: |
