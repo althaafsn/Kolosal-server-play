@@ -780,7 +780,8 @@ void ChatWindow::InputField::renderInputField(bool &focusInputField, float input
     }
 
     ImGuiInputTextFlags flags = ImGuiInputTextFlags_EnterReturnsTrue |
-                                ImGuiInputTextFlags_CtrlEnterForNewLine;
+                                ImGuiInputTextFlags_CtrlEnterForNewLine |
+                                ImGuiInputTextFlags_ShiftEnterForNewLine;
 
     float availableWidth = ImGui::GetContentRegionAvail().x;
     float actualInputWidth = (inputWidth < availableWidth) ? inputWidth : availableWidth;
