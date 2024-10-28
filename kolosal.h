@@ -1,5 +1,5 @@
-#ifndef KOLASAL_H
-#define KOLASAL_H
+#ifndef KOLOSAL_H
+#define KOLOSAL_H
 
 #include <string>
 #include <vector>
@@ -9,9 +9,15 @@
 #include <regex>
 #include <array>
 #include <optional>
+#include <filesystem>
 #include "imgui.h"
 #include "IconsFontAwesome5.h"
 #include "IconsFontAwesome5Brands.h"
+#include "json.hpp"
+
+#define PRESETS_DIRECTORY "presets"
+
+using json = nlohmann::json;
 
 //-----------------------------------------------------------------------------
 // [SECTION] Constants and Configurations
@@ -27,12 +33,12 @@ namespace Config
     namespace Font
     {
         constexpr float DEFAULT_FONT_SIZE = 16.0F;
-    }
+    } // namespace Font
 
     namespace Icon
     {
-        constexpr float DEFAULT_FONT_SIZE = 10.0F;
-    }
+        constexpr float DEFAULT_FONT_SIZE = 14.0F;
+    } // namespace Icon
 
     namespace BackgroundColor
     {
@@ -40,12 +46,12 @@ namespace Config
         constexpr float G = 0.1F;
         constexpr float B = 0.1F;
         constexpr float A = 1.0F;
-    }
+    } // namespace BackgroundColor
 
     namespace UserColor
     {
         constexpr float COMPONENT = 47.0F / 255.0F;
-    }
+    } // namespace UserColor
 
     namespace Bubble
     {
@@ -53,37 +59,74 @@ namespace Config
         constexpr float PADDING = 15.0F;
         constexpr float RIGHT_PADDING = 20.0F;
         constexpr float BOT_PADDING_X = 20.0F;
-    }
+    } // namespace Bubble
 
     namespace Timing
     {
         constexpr float TIMESTAMP_OFFSET_Y = 5.0F;
-    }
+    } // namespace Timing
 
     namespace Button
     {
         constexpr float WIDTH = 30.0F;
         constexpr float SPACING = 10.0F;
         constexpr float RADIUS = 5.0F;
-    }
+    } // namespace Button
 
     namespace Style
     {
         constexpr float CHILD_ROUNDING = 10.0F;
         constexpr float FRAME_ROUNDING = 12.0F;
         constexpr float INPUT_FIELD_BG_COLOR = 0.15F;
-    }
+    } // namespace Style
 
     namespace InputField
     {
         constexpr size_t TEXT_SIZE = 1024;
-    }
+    } // namespace InputField
+
+    namespace ModelSettings
+    {
+        constexpr float SIDEBAR_WIDTH = 200.0F;
+        constexpr float MIN_SIDEBAR_WIDTH = 200.0F;
+        constexpr float MAX_SIDEBAR_WIDTH = 400.0F;
+    } // namespace ModelSettings
+
+    namespace Color
+    {
+        constexpr ImVec4 TRANSPARENT = ImVec4(0.0F, 0.0F, 0.0F, 0.0F);
+        constexpr ImVec4 PRIMARY = ImVec4(0.3F, 0.3F, 0.3F, 0.5F);
+        constexpr ImVec4 SECONDARY = ImVec4(0.3F, 0.3F, 0.3F, 0.3F);
+    } // namespace Color
+
+    namespace Slider
+    {
+        constexpr ImVec4 TRACK_COLOR = ImVec4(0.2f, 0.2f, 0.2f, 1.0f);
+        constexpr ImVec4 GRAB_COLOR = ImVec4(0.2f, 0.2f, 0.2f, 1.0f);
+
+        constexpr float TRACK_THICKNESS = 0.2f;
+        constexpr float GRAB_RADIUS = 100.0f;
+        constexpr float GRAB_MIN_SIZE = 5.0f;
+    } // namespace Slider
+
+    namespace ComboBox
+    {
+        constexpr ImVec4 COMBO_BG_COLOR = ImVec4(0.15F, 0.15F, 0.15F, 1.0F);
+        constexpr ImVec4 COMBO_BORDER_COLOR = ImVec4(0.0F, 0.0F, 0.0F, 0.0F);
+        constexpr ImVec4 TEXT_COLOR = ImVec4(1.0F, 1.0F, 1.0F, 1.0F);
+        constexpr ImVec4 BUTTON_HOVERED_COLOR = ImVec4(0.3F, 0.3F, 0.3F, 0.5F);
+        constexpr ImVec4 BUTTON_ACTIVE_COLOR = ImVec4(0.3F, 0.3F, 0.3F, 0.5F);
+        constexpr ImVec4 POPUP_BG_COLOR = ImVec4(0.12F, 0.12F, 0.12F, 1.0F);
+
+        constexpr float FRAME_ROUNDING = 5.0F;
+        constexpr float POPUP_ROUNDING = 2.0F;
+    } // namespace ComboBox
 
     constexpr float HALF_DIVISOR = 2.0F;
     constexpr float BOTTOM_MARGIN = 10.0F;
     constexpr float INPUT_HEIGHT = 100.0F;
     constexpr float CHAT_WINDOW_CONTENT_WIDTH = 750.0F;
-}
+} // namespace Config
 
 //-----------------------------------------------------------------------------
 // [SECTION] Structs and Enums
@@ -113,6 +156,7 @@ struct MarkdownFonts
 struct IconFonts
 {
     ImFont *regular = nullptr;
+    ImFont *solid = nullptr;
     ImFont *brands = nullptr;
 };
 
@@ -124,11 +168,76 @@ struct IconFonts
  */
 struct ButtonConfig
 {
+    std::string id;
     std::optional<std::string> label;
-    std::string icon;
+    std::optional<std::string> icon;
     ImVec2 size;
     float padding;
     std::function<void()> onClick;
+    bool iconSolid;
+    std::optional<ImVec4> backgroundColor   = Config::Color::TRANSPARENT;
+    std::optional<ImVec4> hoverColor        = Config::Color::SECONDARY;
+    std::optional<ImVec4> activeColor       = Config::Color::PRIMARY;
+    bool isEnabled = true;
+};
+
+/**
+ * @brief A struct to store the configuration for a label
+ *
+ * The LabelConfig struct stores the configuration for a label, including the label,
+ * icon, size, icon padding, gap, and whether the label is bold.
+ */
+struct LabelConfig
+{
+    std::string id;
+    std::string label;
+    std::optional<std::string> icon = "";
+    ImVec2 size;
+    std::optional<float> iconPaddingX = 5.0F;
+    std::optional<float> iconPaddingY = 5.0F;
+    std::optional<float> gap = 5.0F;
+    bool isBold;
+    bool iconSolid;
+};
+
+/**
+ * @brief A struct to store the configuration for a slider
+ *
+ * The SliderConfig struct stores the configuration for a slider, including the label,
+ * value, min, max, and the onChange function.
+ */
+struct ModelPreset
+{
+    std::string name;
+    std::string systemPrompt;
+
+    // sampling
+    float temperature;
+    float top_p;
+    // TODO: Use int instead of float
+    // I use float right now because ImGui::SliderFloat requires a float
+    // so it needed to create a new custom slider for int
+    float top_k;
+    int random_seed;
+
+    // generation
+    // TODO: Use int instead of float
+    float max_new_tokens;
+    // TODO: Use int instead of float
+    float min_length;
+
+    ModelPreset(
+        const std::string& name = "",
+        const std::string& systemPrompt = "",
+        float temperature = 0.7f,
+        float top_p = 0.9f,
+        float top_k = 50.0f,
+        int random_seed = 42,
+        float min_length = 0.0f,
+        float max_new_tokens = 2048.0f
+    ) : name(name), systemPrompt(systemPrompt), temperature(temperature),
+        top_p(top_p), top_k(top_k), random_seed(random_seed),
+        min_length(min_length), max_new_tokens(max_new_tokens) {}
 };
 
 //-----------------------------------------------------------------------------
@@ -146,6 +255,9 @@ extern MarkdownFonts g_mdFonts;
 
 // Global icon fonts
 extern IconFonts g_iconFonts;
+
+// Global presets manager
+extern std::unique_ptr<class PresetManager> g_presetManager;
 
 //-----------------------------------------------------------------------------
 // [SECTION] Classes
@@ -208,6 +320,50 @@ private:
     ChatHistory chatHistory;
 };
 
+/**
+ * @brief A class to manage presets for the model settings
+ *
+ * The PresetManager class is responsible for loading, saving, and deleting model
+ * presets. It also provides functionality to switch between presets and reset
+ * the current preset to the default values.
+ */
+class PresetManager {
+public:
+    explicit PresetManager(const std::string& presetsDirectory);
+    
+    // Core functionality
+    auto loadPresets() -> bool;
+    auto savePreset(const ModelPreset& preset, bool createNewFile = false) -> bool;
+    auto deletePreset(const std::string& presetName) -> bool;
+    void switchPreset(int newIndex);
+    void resetCurrentPreset();
+
+    // Getters and setters
+    auto getPresets() const -> const std::vector<ModelPreset> & { return loadedPresets; }
+    auto getCurrentPreset() const -> const ModelPreset & { return loadedPresets[currentPresetIndex]; }
+    auto getCurrentPreset() -> ModelPreset & { return loadedPresets[currentPresetIndex]; }
+    auto getCurrentPresetIndex() const -> int { return currentPresetIndex; }
+    void setCurrentPresetIndex(int index);
+    auto getDefaultPreset() const -> const ModelPreset & { return defaultPreset; }
+    auto hasUnsavedChanges() const -> bool;
+
+private:
+    std::string presetsPath;
+    std::vector<ModelPreset> loadedPresets;
+    std::vector<ModelPreset> originalPresets;
+    ModelPreset defaultPreset;
+    int currentPresetIndex;
+    bool hasInitialized = false;
+
+    // Helper methods
+    void createPresetsDirectoryIfNotExists();
+    void initializeDefaultPreset();
+    auto getDefaultPresets() const -> std::vector<ModelPreset>;
+    auto getPresetFilePath(const std::string& presetName) const -> std::string;
+    auto isValidPresetName(const std::string& name) const -> bool;
+    void saveDefaultPresets();
+};
+
 //-----------------------------------------------------------------------------
 // [SECTION] Function Prototypes
 //-----------------------------------------------------------------------------
@@ -222,14 +378,58 @@ void setupImGui(GLFWwindow *window);
 void mainLoop(GLFWwindow *window);
 void cleanup(GLFWwindow *window);
 
+// Utility Functions
+auto RGBAToImVec4(float r, float g, float b, float a) -> ImVec4;
+void to_json(json& j, const ModelPreset& p);
+void from_json(const json& j, ModelPreset& p);
+
 // Custom UI Functions
-void renderSingleButton(const ButtonConfig &config);
-void renderButtonGroup(const std::vector<ButtonConfig> &buttons, float startX, float startY, float spacing = Config::Button::SPACING);
+namespace Widgets
+{
+    namespace Button
+    {
+        void render(const ButtonConfig &config);
+        void renderGroup(const std::vector<ButtonConfig> &buttons, float startX, float startY, float spacing = Config::Button::SPACING);
+    } // namespace Button
+
+    namespace Label
+    {
+        void render(const LabelConfig &config);
+    } // namespace Label
+
+    namespace InputField
+    {
+        void setStyle(float frameRounding, const ImVec2 &framePadding, const ImVec4 &bgColor);
+        void restoreStyle();
+        void handleSubmission(char *inputText, bool &focusInputField, const std::function<void(const std::string &)> &processInput, bool clearInput);
+        void render(
+            const char *label, char *inputTextBuffer, const ImVec2 &inputSize,
+            const std::string &placeholderText, ImGuiInputTextFlags inputFlags,
+            const std::function<void(const std::string &)> &processInput, bool &focusInputField);
+    } // namespace InputField
+
+    namespace Slider
+    {
+        void render(const char *label, float &value, float minValue, float maxValue, const float sliderWidth, const char *format = "%.2f", const float paddingX = 5.0F, const float inputWidth = 32.0F);
+    } // namespace Slider
+
+    namespace IntInputField
+    {
+        void render(const char *label, int &value, const float inputWidth, const float paddingX = 5.0F);
+    } // namespace IntInputField
+
+    namespace ComboBox
+    {
+        auto render(const char *label, const char **items, int itemsCount, int &selectedItem, float width) -> bool;
+    } // namespace ComboBox
+
+} // namespace Widgets
 
 namespace ChatWindow
 {
-    void renderChatWindow(bool &focusInputField, float inputHeight);
+    void render(float inputHeight, float sidebarWidth);
     void renderChatHistory(const ChatHistory &chatHistory, float contentWidth);
+    void renderInputField(float inputHeight, float inputWidth);
 
     namespace MessageBubble
     {
@@ -239,15 +439,21 @@ namespace ChatWindow
         void renderMessageContent(const Message &msg, float bubbleWidth, float bubblePadding);
         void renderTimestamp(const Message &msg, float bubblePadding);
         void renderButtons(const Message &msg, int index, float bubbleWidth, float bubblePadding);
-    }
+    } // namespace MessageBubble
 
-    namespace InputField
+} // namespace ChatWindow
+
+namespace ModelSettings
+{
+    namespace State
     {
-        void setInputFieldStyle();
-        void restoreInputFieldStyle();
-        void handleInputSubmission(char *inputText, bool &focusInputField);
-        void renderInputField(bool &focusInputField, float inputHeight, float inputWidth);
+        extern bool g_showSaveAsDialog;
+        extern char g_newPresetName[256];
     }
-}
 
-#endif // KOLASAL_H
+    void render(float &sidebarWidth);
+    void renderModelPresetsSelection(const float sidebarWidth);
+    void renderSamplingSettings(const float sidebarWidth);
+} // namespace ModelSettings
+
+#endif // KOLOSAL_H
