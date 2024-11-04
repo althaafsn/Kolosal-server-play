@@ -1,3 +1,29 @@
+/*
+ * Copyright (c) 2024, Rifky Bujana Bisri.  All rights reserved.
+ *
+ * This file is part of Genta Technology.
+ *
+ * Developed by Genta Technology Team.
+ * This product includes software developed by the Genta Technology Team.
+ *
+ *     https://genta.tech
+ *
+ * See the COPYRIGHT file at the top-level directory of this distribution
+ * for details of code ownership.
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *     http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
+
 #include "kolosal.h"
 #include <iostream>
 #include <cstring>
@@ -12,7 +38,7 @@
 #include "imgui_impl_opengl3.h"
 #include "imgui_internal.h"
 
-using json = nlohmann::json;
+using json = json;
 
 //-----------------------------------------------------------------------------
 // [SECTION] Constants and Configurations
@@ -29,122 +55,735 @@ namespace Config
 // [SECTION] Global Variables
 //-----------------------------------------------------------------------------
 
-// Define global instance of ChatBot
-ChatBot chatBot;
-
-// Define global instance of MarkdownFonts
 MarkdownFonts g_mdFonts;
-
-// Define global instance of IconFonts
 IconFonts g_iconFonts;
-
-// Define global instance of PresetManager
+std::unique_ptr<ChatManager> g_chatManager;
 std::unique_ptr<PresetManager> g_presetManager;
-// idk if this is the right way to do it
-// but it's the only way I can think of
-bool ModelSettings::State::g_showSaveAsDialog = false;
-char ModelSettings::State::g_newPresetName[256] = "";
 
 //-----------------------------------------------------------------------------
-// [SECTION] Message Class Implementations
+// [SECTION] ChatManager Class Implementations
 //-----------------------------------------------------------------------------
 
 /**
- * @brief Constructs a new Message object.
+ * @brief Constructs a new ChatManager object.
  *
- * @param content The content of the message.
- * @param isUser Indicates if the message is from a user.
+ * @param chatsDirectory The directory where chats are stored.
  */
-Message::Message(std::string content, bool isUser)
-    : content(std::move(content)), isUser(isUser), timestamp(std::chrono::system_clock::now()) {}
-
-/**
- * @brief Gets the content of the message.
- *
- * @return std::string The content of the message.
- */
-auto Message::getContent() const -> std::string
+ChatManager::ChatManager(const std::string &chatsDirectory)
+    : chatsPath(chatsDirectory), currentChatIndex(0), hasInitialized(false)
 {
-    return content;
+    createChatsDirectoryIfNotExists();
+    if (!loadChats())
+    {
+        std::cerr << "Failed to load chats" << std::endl;
+    }
 }
 
 /**
- * @brief Checks if the message is from a user.
+ * @brief Creates the chats directory if it does not exist.
+ */
+void ChatManager::createChatsDirectoryIfNotExists()
+{
+    try
+    {
+        if (!std::filesystem::exists(chatsPath))
+        {
+            std::filesystem::create_directories(chatsPath);
+        }
+        // Test file write permissions
+        std::string testPath = chatsPath + "/test.txt";
+        std::ofstream test(testPath);
+        if (!test.is_open())
+        {
+            std::cerr << "Cannot write to chats directory" << std::endl;
+        }
+        else
+        {
+            test.close();
+            std::filesystem::remove(testPath);
+        }
+    }
+    catch (const std::filesystem::filesystem_error &e)
+    {
+        std::cerr << "Error with chats directory: " << e.what() << std::endl;
+        throw;
+    }
+}
+
+/**
+ * @brief Initializes the default chat history.
+ */
+void ChatManager::initializeDefaultChatHistory()
+{
+    defaultChatHistory = ChatHistory(
+        0,
+        static_cast<int>(std::time(nullptr)),
+        "untitled",
+        {} // Empty messages vector
+    );
+}
+
+/**
+ * @brief Gets the default chat histories.
  *
- * @return bool True if the message is from a user, false otherwise.
+ * @return std::vector<ChatHistory> A vector containing the default chat history.
  */
-auto Message::isUserMessage() const -> bool
+auto ChatManager::getDefaultChatHistories() const -> std::vector<ChatHistory>
 {
-    return isUser;
+    return {defaultChatHistory};
 }
 
 /**
- * @brief Gets the timestamp of the message in a formatted string.
+ * @brief Loads the chats from disk.
  *
- * @return std::string The formatted timestamp of the message.
+ * @return bool True if the chats are successfully loaded, false otherwise.
  */
-auto Message::getTimestamp() const -> std::string
+auto ChatManager::loadChats() -> bool
 {
-    std::time_t time = std::chrono::system_clock::to_time_t(timestamp);
-    std::tm timeInfo;
+    createChatsDirectoryIfNotExists();
 
-#ifdef _WIN32
-    localtime_s(&timeInfo, &time);
-#else
-    localtime_r(&time, &timeInfo);
-#endif
+    loadedChats.clear();
+    originalChats.clear();
 
-    std::ostringstream oss;
-    oss << std::put_time(&timeInfo, "%Y-%m-%d %H:%M:%S");
-    return oss.str();
+    try
+    {
+        bool foundChats = false;
+        for (const auto &entry : std::filesystem::directory_iterator(chatsPath))
+        {
+            if (entry.path().extension() == ".chat")
+            {
+                std::ifstream file(entry.path(), std::ios::binary);
+                if (file.is_open())
+                {
+                    try
+                    {
+                        std::string encryptedData((std::istreambuf_iterator<char>(file)),
+                                                  std::istreambuf_iterator<char>());
+                        std::string decryptedData = decryptData(encryptedData);
+                        json j = json::parse(decryptedData);
+                        ChatHistory chat = j.get<ChatHistory>();
+                        loadedChats.push_back(chat);
+                        originalChats.push_back(chat);
+                        foundChats = true;
+                    }
+                    catch (const json::exception &e)
+                    {
+                        std::cerr << "Error parsing chat file " << entry.path()
+                                  << ": " << e.what() << std::endl;
+                    }
+                }
+            }
+        }
+
+        if (!foundChats && !hasInitialized)
+        {
+            initializeDefaultChatHistory();
+            loadedChats = getDefaultChatHistories();
+            originalChats = loadedChats;
+            saveDefaultChatHistory();
+        }
+
+        // Sort chats by lastModified
+        std::sort(loadedChats.begin(), loadedChats.end(),
+                  [](const ChatHistory &a, const ChatHistory &b)
+                  { return a.lastModified > b.lastModified; });
+        std::sort(originalChats.begin(), originalChats.end(),
+                  [](const ChatHistory &a, const ChatHistory &b)
+                  { return a.lastModified > b.lastModified; });
+
+        currentChatIndex = loadedChats.empty() ? -1 : 0;
+        return true;
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Error loading chats: " << e.what() << std::endl;
+        return false;
+    }
 }
 
-//-----------------------------------------------------------------------------
-// [SECTION] ChatHistory Class Implementations
-//-----------------------------------------------------------------------------
-
 /**
- * @brief Adds a message to the chat history.
- * @param message The message to add.
- */
-void ChatHistory::addMessage(const Message &message)
-{
-    messages.push_back(message);
-}
-
-/**
- * @brief Retrieves the chat history.
- * @return A constant reference to the vector of messages.
- */
-auto ChatHistory::getMessages() const -> const std::vector<Message> &
-{
-    return messages;
-}
-
-//-----------------------------------------------------------------------------
-// [SECTION] ChatBot Class Implementations
-//-----------------------------------------------------------------------------
-
-/**
- * @brief Processes user input and generates a response.
+ * @brief Saves a chat to disk.
  *
- * @param input The user's input string.
+ * @param chat The chat to save.
+ * @param createNewFile True to create a new file, false to overwrite an existing file.
+ * @return bool True if the chat is successfully saved, false otherwise.
  */
-void ChatBot::processUserInput(const std::string &input)
+auto ChatManager::saveChat(const ChatHistory &chat, bool createNewFile) -> bool
 {
-    chatHistory.addMessage(Message(input, true));
-    std::string response = "Bot: " + input;
-    chatHistory.addMessage(Message(response, false));
+    if (!isValidChatName(chat.name))
+    {
+        std::cerr << "Invalid chat name: " << chat.name << std::endl;
+        return false;
+    }
+
+    try
+    {
+        ChatHistory newChat = chat;
+        newChat.lastModified = static_cast<int>(std::time(nullptr)); // Set the current time
+
+        if (createNewFile)
+        {
+            // Ensure the chat name is unique (handled in createNewChat)
+        }
+        else
+        {
+            // Update existing chat in loadedChats and originalChats
+            for (size_t i = 0; i < loadedChats.size(); ++i)
+            {
+                if (loadedChats[i].name == newChat.name)
+                {
+                    loadedChats[i] = newChat;
+                    originalChats[i] = newChat;
+                    break;
+                }
+            }
+        }
+
+        json j = newChat;
+        std::string jsonData = j.dump(4);
+        std::string encryptedData = encryptData(jsonData);
+        std::ofstream file(getChatFilePath(newChat.name), std::ios::binary);
+        if (!file.is_open())
+        {
+            std::cerr << "Could not open file for writing: " << newChat.name << std::endl;
+            return false;
+        }
+
+        file << encryptedData;
+
+        // Sort chats by lastModified
+        std::sort(loadedChats.begin(), loadedChats.end(),
+                  [](const ChatHistory &a, const ChatHistory &b)
+                  { return a.lastModified > b.lastModified; });
+        std::sort(originalChats.begin(), originalChats.end(),
+                  [](const ChatHistory &a, const ChatHistory &b)
+                  { return a.lastModified > b.lastModified; });
+
+        // Reassign IDs after sorting
+        for (size_t i = 0; i < loadedChats.size(); ++i)
+        {
+            loadedChats[i].id = static_cast<int>(i + 1);
+            originalChats[i].id = static_cast<int>(i + 1);
+        }
+
+        // After sorting, find the index of the saved chat
+        auto it = std::find_if(loadedChats.begin(), loadedChats.end(),
+                               [&newChat](const ChatHistory &c)
+                               { return c.name == newChat.name; });
+
+        if (it != loadedChats.end())
+        {
+            int index = static_cast<int>(std::distance(loadedChats.begin(), it));
+            // Set current chat to the saved chat
+            switchChat(index);
+        }
+        else
+        {
+            std::cerr << "Error: saved chat not found in loadedChats after sorting." << std::endl;
+        }
+
+        return true;
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Error saving chat: " << e.what() << std::endl;
+        return false;
+    }
 }
 
 /**
- * @brief Retrieves the chat history.
+ * @brief Saves a chat to a custom path as JSON (unencrypted).
  *
- * @return const ChatHistory& Reference to the chat history.
+ * @param chat The chat to save.
+ * @param filePath The file path to save the chat.
+ * @return bool True if the chat is successfully saved, false otherwise.
  */
-auto ChatBot::getChatHistory() const -> const ChatHistory &
+auto ChatManager::saveChatToPath(const ChatHistory &chat, const std::string &filePath) -> bool
 {
-    return chatHistory;
+    if (!isValidChatName(chat.name))
+    {
+        std::cerr << "Invalid chat name: " << chat.name << std::endl;
+        return false;
+    }
+
+    try
+    {
+        // Ensure the directory exists
+        std::filesystem::path path(filePath);
+        std::filesystem::create_directories(path.parent_path());
+
+        json j = chat;
+        std::ofstream file(filePath);
+        if (!file.is_open())
+        {
+            std::cerr << "Could not open file for writing: " << filePath << std::endl;
+            return false;
+        }
+
+        file << j.dump(4);
+
+        return true;
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Error saving chat: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+/**
+ * @brief Deletes a chat from disk.
+ *
+ * @param chatName The name of the chat to delete.
+ * @return bool True if the chat is successfully deleted, false otherwise.
+ */
+auto ChatManager::deleteChat(const std::string &chatName) -> bool
+{
+    try
+    {
+        std::string filePath = getChatFilePath(chatName);
+
+        // Remove from vectors first
+        auto it = std::find_if(loadedChats.begin(), loadedChats.end(),
+                               [&chatName](const ChatHistory &c)
+                               { return c.name == chatName; });
+
+        if (it != loadedChats.end())
+        {
+            size_t index = std::distance(loadedChats.begin(), it);
+            loadedChats.erase(it);
+            originalChats.erase(originalChats.begin() + index);
+
+            // Adjust current index if necessary
+            if (currentChatIndex >= static_cast<int>(loadedChats.size()))
+            {
+                currentChatIndex = loadedChats.empty() ? -1 : loadedChats.size() - 1;
+            }
+            // Reassign incremental IDs
+            for (size_t i = 0; i < loadedChats.size(); ++i)
+            {
+                loadedChats[i].id = static_cast<int>(i + 1);
+                originalChats[i].id = static_cast<int>(i + 1);
+            }
+        }
+
+        // Try to delete the file if it exists
+        if (std::filesystem::exists(filePath))
+        {
+            if (!std::filesystem::remove(filePath))
+            {
+                std::cerr << "Failed to delete chat file: " << filePath << std::endl;
+                return false;
+            }
+        }
+
+        return true;
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Error deleting chat: " << e.what() << std::endl;
+        return false;
+    }
+}
+
+/**
+ * @brief Creates a new chat, switches to it, and places it at the top of the chat list.
+ */
+void ChatManager::createNewChat()
+{
+    try
+    {
+        // Generate a unique base name for the new chat
+        int chatNumber = static_cast<int>(loadedChats.size()) + 1;
+        std::string baseName = "Untitled_" + std::to_string(chatNumber);
+        std::string chatName = baseName;
+
+        // Ensure the chat name is unique
+        int counter = 1;
+        while (std::any_of(loadedChats.begin(), loadedChats.end(),
+                           [&chatName](const ChatHistory &chat)
+                           { return chat.name == chatName; }))
+        {
+            chatName = baseName + "_" + std::to_string(counter++);
+        }
+
+        // Create a new ChatHistory object
+        ChatHistory newChat;
+        newChat.id = chatNumber;
+        newChat.name = chatName;
+        newChat.lastModified = static_cast<int>(std::time(nullptr));
+        newChat.messages = {}; // Start with an empty message list
+
+        // Add the new chat to the vectors
+        loadedChats.push_back(newChat);
+        originalChats.push_back(newChat);
+
+        // Save the new chat (creates a new file)
+        saveChat(newChat, true);
+
+        // After saving, the chats are sorted by lastModified in saveChat()
+        // We need to find the index of the new chat after sorting
+        auto it = std::find_if(loadedChats.begin(), loadedChats.end(),
+                               [&newChat](const ChatHistory &chat)
+                               { return chat.name == newChat.name; });
+        if (it != loadedChats.end())
+        {
+            int index = static_cast<int>(std::distance(loadedChats.begin(), it));
+            // Set current chat to the new chat
+            switchChat(index);
+        }
+        else
+        {
+            std::cerr << "Error: New chat not found in loadedChats after sorting." << std::endl;
+        }
+    }
+    catch (const std::exception &e)
+    {
+        std::cerr << "Error creating new chat: " << e.what() << std::endl;
+    }
+}
+
+/**
+ * @brief Switches the current chat to the one at the specified index.
+ *
+ * @param newIndex The index of the chat to switch to.
+ */
+void ChatManager::switchChat(int newIndex)
+{
+    if (newIndex < 0 || newIndex >= static_cast<int>(loadedChats.size()))
+    {
+        return;
+    }
+
+    // Save current chat if there are unsaved changes
+    if (hasUnsavedChanges())
+    {
+        saveChat(getCurrentChatHistory(), false);
+    }
+
+    currentChatIndex = newIndex;
+}
+
+/**
+ * @brief Checks if the current chat has unsaved changes.
+ *
+ * @return bool True if the current chat has unsaved changes, false otherwise.
+ */
+auto ChatManager::hasUnsavedChanges() const -> bool
+{
+    if (currentChatIndex >= loadedChats.size() ||
+        currentChatIndex >= originalChats.size())
+    {
+        return false;
+    }
+
+    const ChatHistory &current = loadedChats[currentChatIndex];
+    const ChatHistory &original = originalChats[currentChatIndex];
+
+    if (current.name != original.name ||
+        current.lastModified != original.lastModified ||
+        current.messages.size() != original.messages.size())
+    {
+        return true;
+    }
+
+    // Check if any messages are different
+    for (size_t i = 0; i < current.messages.size(); ++i)
+    {
+        if (current.messages[i].content != original.messages[i].content ||
+            current.messages[i].role != original.messages[i].role)
+        {
+            return true;
+        }
+    }
+
+    return false;
+}
+
+/**
+ * @brief Resets the current chat to its original state.
+ */
+void ChatManager::resetCurrentChat()
+{
+    if (currentChatIndex < originalChats.size())
+    {
+        loadedChats[currentChatIndex] = originalChats[currentChatIndex];
+    }
+}
+
+/**
+ * @brief Renames the current chat and saves it with the new name.
+ *
+ * This function renames the currently selected chat, saves it with the new name,
+ * and deletes the previous file with the old name.
+ *
+ * @param newChatName The new name for the current chat.
+ * @return bool True if the renaming was successful, false otherwise.
+ */
+auto ChatManager::renameCurrentChat(const std::string &newChatName) -> bool
+{
+    // Check if there is a current chat selected
+    if (currentChatIndex < 0 || currentChatIndex >= static_cast<int>(loadedChats.size()))
+    {
+        std::cerr << "No chat selected to rename." << std::endl;
+        return false;
+    }
+
+    // Validate the new chat name
+    if (!isValidChatName(newChatName))
+    {
+        std::cerr << "Invalid new chat name: " << newChatName << std::endl;
+        return false;
+    }
+
+    // Check if a chat with the new name already exists
+    auto it = std::find_if(loadedChats.begin(), loadedChats.end(),
+                           [&newChatName](const ChatHistory &chat)
+                           { return chat.name == newChatName; });
+    if (it != loadedChats.end())
+    {
+        std::cerr << "Chat name already exists: " << newChatName << std::endl;
+        return false;
+    }
+
+    // Get the current chat and its old file path
+    ChatHistory &currentChat = loadedChats[currentChatIndex];
+    std::string oldChatName = currentChat.name;
+    std::string oldFilePath = getChatFilePath(oldChatName);
+
+    // Update the chat's name and save it under the new name
+    currentChat.name = newChatName;
+    if (!saveChat(currentChat, true))
+    {
+        // Restore the old name if saving failed
+        currentChat.name = oldChatName;
+        std::cerr << "Failed to save chat with the new name: " << newChatName << std::endl;
+        return false;
+    }
+
+    // Delete the old file
+    try
+    {
+        if (std::filesystem::exists(oldFilePath))
+        {
+            std::filesystem::remove(oldFilePath);
+        }
+    }
+    catch (const std::filesystem::filesystem_error &e)
+    {
+        std::cerr << "Failed to delete old chat file: " << e.what() << std::endl;
+        return false;
+    }
+
+    // Also update the originalChats vector to keep it consistent
+    originalChats[currentChatIndex].name = newChatName;
+
+    return true;
+}
+
+/**
+ * @brief Gets the path to the chat file with the specified name.
+ *
+ * @param chatName The name of the chat.
+ * @return std::string The path to the chat file.
+ */
+auto ChatManager::getChatFilePath(const std::string &chatName) const -> std::string
+{
+    return (std::filesystem::path(chatsPath) / (chatName + ".chat")).string();
+}
+
+/**
+ * @brief Checks if a chat name is valid.
+ *
+ * @param name The name of the chat.
+ * @return bool True if the chat name is valid, false otherwise.
+ */
+auto ChatManager::isValidChatName(const std::string &name) const -> bool
+{
+    if (name.empty() || name.length() > 255)
+    {
+        return false;
+    }
+
+    // Check for invalid filesystem characters
+    const std::string invalidChars = R"(<>:"/\|?*)";
+    return name.find_first_of(invalidChars) == std::string::npos;
+}
+
+/**
+ * @brief Saves the default chat history to disk.
+ */
+void ChatManager::saveDefaultChatHistory()
+{
+    // Only save default chat if no chats exist and we haven't initialized yet
+    if (!hasInitialized)
+    {
+        auto defaults = getDefaultChatHistories();
+        for (const auto &chat : defaults)
+        {
+            saveChat(chat, true);
+        }
+        hasInitialized = true; // Mark as initialized after saving the defaults
+    }
+}
+
+/**
+ * @brief Handles adding a user message to the current chat.
+ *
+ * @param messageContent The content of the user message.
+ */
+void ChatManager::handleUserMessage(const std::string &messageContent)
+{
+    if (currentChatIndex < 0 || currentChatIndex >= static_cast<int>(loadedChats.size()))
+    {
+        // If no chat is selected, create a new chat
+        ChatHistory newChat;
+        newChat.name = "Chat_" + std::to_string(loadedChats.size() + 1);
+        newChat.id = static_cast<int>(loadedChats.size()) + 1;
+        newChat.lastModified = static_cast<int>(std::time(nullptr));
+        newChat.messages = {};
+        loadedChats.push_back(newChat);
+        originalChats.push_back(newChat);
+        currentChatIndex = static_cast<int>(loadedChats.size()) - 1;
+    }
+
+    ChatHistory &currentChat = loadedChats[currentChatIndex];
+
+    Message newMessage;
+    newMessage.id = static_cast<int>(currentChat.messages.size()) + 1;
+    newMessage.role = "user";
+    newMessage.content = messageContent;
+    newMessage.timestamp = std::chrono::system_clock::now();
+
+    currentChat.messages.push_back(newMessage);
+
+    // Auto-save the chat
+    saveChat(currentChat, false);
+}
+
+/**
+ * @brief Handles adding an assistant message to the current chat.
+ *
+ * @param messageContent The content of the assistant message.
+ */
+void ChatManager::handleAssistantMessage(const std::string &messageContent)
+{
+    if (currentChatIndex < 0 || currentChatIndex >= static_cast<int>(loadedChats.size()))
+    {
+        std::cerr << "No chat selected to add assistant message." << std::endl;
+        return;
+    }
+
+    ChatHistory &currentChat = loadedChats[currentChatIndex];
+
+    Message newMessage;
+    newMessage.id = static_cast<int>(currentChat.messages.size()) + 1;
+    newMessage.role = "assistant";
+    newMessage.content = messageContent;
+    newMessage.timestamp = std::chrono::system_clock::now();
+
+    currentChat.messages.push_back(newMessage);
+
+    // Auto-save the chat
+    saveChat(currentChat, false);
+}
+
+/**
+ * @brief Encrypts data using a simple XOR cipher with the encryption key.
+ *
+ * @param data The data to encrypt.
+ * @return std::string The encrypted data.
+ */
+auto ChatManager::encryptData(const std::string &data) -> std::string
+{
+    std::string encryptedData = data;
+    for (size_t i = 0; i < data.size(); ++i)
+    {
+        encryptedData[i] = data[i] ^ encryptionKey[i % encryptionKey.size()];
+    }
+    return encryptedData;
+}
+
+/**
+ * @brief Decrypts data using a simple XOR cipher with the encryption key.
+ *
+ * @param data The data to decrypt.
+ * @return std::string The decrypted data.
+ */
+auto ChatManager::decryptData(const std::string &data) -> std::string
+{
+    // XOR decryption is the same as encryption
+    return encryptData(data);
+}
+
+/**
+ * @brief Gets the current chat index.
+ *
+ * @return int The current chat index.
+ */
+auto ChatManager::getCurrentChatIndex() const -> int
+{
+    return currentChatIndex;
+}
+
+/**
+ * @brief Gets the chat history at the specified index.
+ *
+ * @param index The index of the chat history to get.
+ * @return ChatHistory The chat history at the specified index.
+ */
+auto ChatManager::getChatHistory(const int index) const -> ChatHistory
+{
+    if (index >= 0 && index < static_cast<int>(loadedChats.size()))
+    {
+        return loadedChats[index];
+    }
+    else
+    {
+        return ChatHistory();
+    }
+}
+
+/**
+ * @brief Gets the number of loaded chat histories.
+ *
+ * @return int The number of loaded chat histories.
+ */
+auto ChatManager::getChatHistoryCount() const -> int
+{
+    return static_cast<int>(loadedChats.size());
+}
+
+/**
+ * @brief Gets the current chat history.
+ *
+ * @return ChatHistory The current chat history.
+ */
+auto ChatManager::getCurrentChatHistory() const -> ChatHistory
+{
+    if (currentChatIndex >= 0 && currentChatIndex < static_cast<int>(loadedChats.size()))
+    {
+        return loadedChats[currentChatIndex];
+    }
+    else
+    {
+        return ChatHistory();
+    }
+}
+
+/**
+ * @brief Sets the current chat history.
+ *
+ * @param chatHistory The chat history to set as current.
+ */
+void ChatManager::setCurrentChatHistory(const ChatHistory &chatHistory)
+{
+    if (currentChatIndex >= 0 && currentChatIndex < static_cast<int>(loadedChats.size()))
+    {
+        loadedChats[currentChatIndex] = chatHistory;
+        // Save the chat after setting it
+        saveChat(chatHistory, false);
+    }
 }
 
 //-----------------------------------------------------------------------------
@@ -161,6 +800,10 @@ PresetManager::PresetManager(const std::string &presetsDirectory)
 {
     createPresetsDirectoryIfNotExists();
     initializeDefaultPreset();
+    if (!loadPresets())
+    {
+        std::cerr << "Failed to load presets" << std::endl;
+    }
 }
 
 /**
@@ -219,7 +862,7 @@ void PresetManager::initializeDefaultPreset()
  */
 auto PresetManager::getDefaultPresets() const -> std::vector<ModelPreset>
 {
-    return { defaultPreset };
+    return {defaultPreset};
 }
 
 /**
@@ -264,16 +907,16 @@ auto PresetManager::loadPresets() -> bool
 
         if (!foundPresets && !hasInitialized)
         {
-            loadedPresets = getDefaultPresets();
-            originalPresets = loadedPresets;
             saveDefaultPresets();
         }
 
         // Sort presets by lastModified
         std::sort(loadedPresets.begin(), loadedPresets.end(),
-                  [](const ModelPreset &a, const ModelPreset &b) { return a.lastModified > b.lastModified; });
+                  [](const ModelPreset &a, const ModelPreset &b)
+                  { return a.lastModified > b.lastModified; });
         std::sort(originalPresets.begin(), originalPresets.end(),
-                  [](const ModelPreset &a, const ModelPreset &b) { return a.lastModified > b.lastModified; });
+                  [](const ModelPreset &a, const ModelPreset &b)
+                  { return a.lastModified > b.lastModified; });
 
         currentPresetIndex = loadedPresets.empty() ? -1 : 0;
         return true;
@@ -348,9 +991,11 @@ auto PresetManager::savePreset(const ModelPreset &preset, bool createNewFile) ->
 
         // Sort presets by lastModified
         std::sort(loadedPresets.begin(), loadedPresets.end(),
-                  [](const ModelPreset &a, const ModelPreset &b) { return a.lastModified > b.lastModified; });
+                  [](const ModelPreset &a, const ModelPreset &b)
+                  { return a.lastModified > b.lastModified; });
         std::sort(originalPresets.begin(), originalPresets.end(),
-                  [](const ModelPreset &a, const ModelPreset &b) { return a.lastModified > b.lastModified; });
+                  [](const ModelPreset &a, const ModelPreset &b)
+                  { return a.lastModified > b.lastModified; });
 
         // Set current preset to the saved preset
         switchPreset(static_cast<int>(loadedPresets.size()) - 1);
@@ -529,7 +1174,7 @@ auto PresetManager::getPresetFilePath(const std::string &presetName) const -> st
  */
 auto PresetManager::isValidPresetName(const std::string &name) const -> bool
 {
-    if (name.empty() || name.length() > 255)
+    if (name.empty() || name.length() > 256) // 256 + 1 for null terminator
     {
         return false;
     }
@@ -722,18 +1367,16 @@ void mainLoop(GLFWwindow *window)
     float inputHeight = Config::INPUT_HEIGHT; // Set your desired input field height here
 
     // Initialize sidebar width with a default value from the configuration
-    float sidebarWidth = Config::ModelSettings::SIDEBAR_WIDTH;
+    float chatHistorySidebarWidth = Config::ChatHistorySidebar::SIDEBAR_WIDTH;
+    float modelPresetSidebarWidth = Config::ModelPresetSidebar::SIDEBAR_WIDTH;
 
-    // load presets
+    // Initialize the chat manager and preset manager
+    g_chatManager = std::make_unique<ChatManager>(CHAT_HISTORY_DIRECTORY);
     g_presetManager = std::make_unique<PresetManager>(PRESETS_DIRECTORY);
-    if (!g_presetManager->loadPresets())
-    {
-        std::cerr << "Failed to load presets" << std::endl;
-    }
 
     // setup NFD
     NFD_Init();
-  
+
     while (glfwWindowShouldClose(window) == GLFW_FALSE)
     {
         glfwPollEvents();
@@ -742,10 +1385,11 @@ void mainLoop(GLFWwindow *window)
         ImGui::NewFrame();
 
         // Render the sidebar first to capture any width changes
-        ModelSettings::render(sidebarWidth);
+        ChatHistorySidebar::render(chatHistorySidebarWidth);
+        ModelPresetSidebar::render(modelPresetSidebarWidth);
 
         // Render the main chat window, passing the current sidebar width
-        ChatWindow::render(inputHeight, sidebarWidth);
+        ChatWindow::render(inputHeight, chatHistorySidebarWidth, modelPresetSidebarWidth);
 
         // Render the ImGui frame
         ImGui::Render();
@@ -803,6 +1447,103 @@ auto RGBAToImVec4(float r, float g, float b, float a) -> ImVec4
 }
 
 /**
+ * @brief Converts a time_point to a string.
+ *
+ * @param tp The time_point to convert.
+ * @return std::string The string representation of the time_point.
+ */
+auto timePointToString(const std::chrono::system_clock::time_point &tp) -> std::string
+{
+    std::time_t time = std::chrono::system_clock::to_time_t(tp);
+    std::tm tm = *std::localtime(&time);
+    std::ostringstream oss;
+    oss << std::put_time(&tm, "%Y-%m-%d %H:%M:%S");
+    return oss.str();
+}
+
+/**
+ * @brief Converts a string to a time_point.
+ *
+ * @param str The string to convert.
+ * @return std::chrono::system_clock::time_point The time_point representation of the string.
+ */
+auto stringToTimePoint(const std::string &str) -> std::chrono::system_clock::time_point
+{
+    std::istringstream iss(str);
+    std::tm tm = {};
+    iss >> std::get_time(&tm, "%Y-%m-%d %H:%M:%S");
+    std::time_t time = std::mktime(&tm);
+    return std::chrono::system_clock::from_time_t(time);
+}
+
+//-----------------------------------------------------------------------------
+// [SECTION] JSON Serialization and Deserialization
+//-----------------------------------------------------------------------------
+
+/**
+ * @brief Serializes a Message object to JSON.
+ *
+ * @param j The JSON object to serialize to.
+ * @param msg The Message object to serialize.
+ */
+void to_json(json &j, const Message &msg)
+{
+    j = json{
+        {"id", msg.id},
+        {"isLiked", msg.isLiked},
+        {"isDisliked", msg.isDisliked},
+        {"role", msg.role},
+        {"content", msg.content},
+        {"timestamp", timePointToString(msg.timestamp)}};
+}
+
+/**
+ * @brief Deserializes a JSON object to a Message object.
+ *
+ * @param j The JSON object to deserialize.
+ * @param msg The Message object to populate.
+ */
+void from_json(const json &j, Message &msg)
+{
+    msg.id = j.at("id").get<int>();
+    msg.isLiked = j.at("isLiked").get<bool>();
+    msg.isDisliked = j.at("isDisliked").get<bool>();
+    msg.role = j.at("role").get<std::string>();
+    msg.content = j.at("content").get<std::string>();
+    std::string timestampStr = j.at("timestamp").get<std::string>();
+    msg.timestamp = stringToTimePoint(timestampStr);
+}
+
+/**
+ * @brief Serializes a ChatHistory object to JSON.
+ *
+ * @param j The JSON object to serialize to.
+ * @param chatHistory The ChatHistory object to serialize.
+ */
+void to_json(json &j, const ChatHistory &chatHistory)
+{
+    j = json{
+        {"id", chatHistory.id},
+        {"lastModified", chatHistory.lastModified},
+        {"name", chatHistory.name},
+        {"messages", chatHistory.messages}};
+}
+
+/**
+ * @brief Deserializes a JSON object to a ChatHistory object.
+ *
+ * @param j The JSON object to deserialize.
+ * @param chatHistory The ChatHistory object to populate.
+ */
+void from_json(const json &j, ChatHistory &chatHistory)
+{
+    j.at("id").get_to(chatHistory.id);
+    j.at("lastModified").get_to(chatHistory.lastModified);
+    j.at("name").get_to(chatHistory.name);
+    j.at("messages").get_to(chatHistory.messages);
+}
+
+/**
  * @brief Serializes a ModelPreset object to JSON.
  *
  * @param j The JSON object to serialize to.
@@ -854,74 +1595,65 @@ void from_json(const json &j, ModelPreset &p)
  */
 void Widgets::Button::render(const ButtonConfig &config)
 {
-    std::string buttonText;
-    bool hasIcon = config.icon.has_value() && !config.icon->empty();
-    bool hasLabel = config.label.has_value();
+    // Handle button state and styles as before
+    ButtonState currentState = config.state.value_or(ButtonState::NORMAL);
 
-    // TODO: Implement button state handling (disabled, active, etc.)
+    switch (currentState)
+    {
+    case ButtonState::DISABLED:
+        ImGui::PushStyleColor(ImGuiCol_Button, config.activeColor.value());
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, config.activeColor.value());
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, config.activeColor.value());
 
-    ImGui::PushStyleColor(ImGuiCol_Button, config.backgroundColor.value());
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, config.hoverColor.value());
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive, config.activeColor.value());
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5F);
+        break;
+    case ButtonState::ACTIVE:
+        ImGui::PushStyleColor(ImGuiCol_Button, config.activeColor.value());
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, config.activeColor.value());
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, config.activeColor.value());
+
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 1.0F);
+        break;
+    default:
+        ImGui::PushStyleColor(ImGuiCol_Button, config.backgroundColor.value());
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, config.hoverColor.value());
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, config.activeColor.value());
+
+        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 1.0F);
+        break;
+    }
 
     // Set the border radius (rounding) for the button
     ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, Config::Button::RADIUS);
 
-    if (hasIcon)
+    // Render the button with an empty label
+    if (ImGui::Button(config.id.c_str(), config.size) &&
+        config.onClick && currentState != ButtonState::DISABLED && currentState != ButtonState::ACTIVE)
     {
-        if (config.iconSolid)
-        {
-            ImGui::PushFont(g_iconFonts.solid);
-        }
-        else
-        {
-            ImGui::PushFont(g_iconFonts.regular);
-        }
+        config.onClick();
     }
 
-    if (hasIcon && hasLabel)
-    {
-        buttonText = config.icon.value();
-        if (ImGui::Button(buttonText.c_str(), ImVec2(config.size.x / 4, config.size.y)))
-        {
-            if (config.onClick)
-                config.onClick();
-        }
+    // Get the rectangle of the button
+    ImVec2 buttonMin = ImGui::GetItemRectMin();
+    ImVec2 buttonMax = ImGui::GetItemRectMax();
 
-        ImGui::PopFont(); // Pop icon font
-        ImGui::SameLine(0, config.padding);
+    // Prepare the label configuration
+    LabelConfig labelConfig;
+    labelConfig.id = config.id;
+    labelConfig.label = config.label.value_or("");
+    labelConfig.icon = config.icon.value_or("");
+    labelConfig.size = config.size;
+    labelConfig.isBold = false; // Set according to your needs
+    labelConfig.iconSolid = config.iconSolid.value_or(false);
+    labelConfig.gap = config.gap.value_or(5.0f);
+    labelConfig.alignment = config.alignment.value_or(Alignment::CENTER);
 
-        // Use regular font for label
-        buttonText = config.label.value();
-        if (ImGui::Button(buttonText.c_str(), ImVec2(3 * config.size.x / 4, config.size.y)))
-        {
-            if (config.onClick)
-                config.onClick();
-        }
-    }
-    else if (hasIcon)
-    {
-        buttonText = config.icon.value();
-        if (ImGui::Button(buttonText.c_str(), config.size))
-        {
-            if (config.onClick)
-                config.onClick();
-        }
-        ImGui::PopFont(); // Pop icon font
-    }
-    else if (hasLabel)
-    {
-        buttonText = config.label.value();
-        if (ImGui::Button(buttonText.c_str(), config.size))
-        {
-            if (config.onClick)
-                config.onClick();
-        }
-    }
+    // Render the label inside the button's rectangle
+    Widgets::Label::render(labelConfig, buttonMin, buttonMax);
 
-    // Pop color styles and border radius style
+    // Pop styles
     ImGui::PopStyleColor(3);
-    ImGui::PopStyleVar();
+    ImGui::PopStyleVar(2);
 }
 
 /**
@@ -937,14 +1669,18 @@ void Widgets::Button::renderGroup(const std::vector<ButtonConfig> &buttons, floa
     ImGui::SetCursorPosX(startX);
     ImGui::SetCursorPosY(startY);
 
+    // Position each button and apply spacing
+    float currentX = startX;
     for (size_t i = 0; i < buttons.size(); ++i)
     {
+        // Set cursor position for each button
+        ImGui::SetCursorPos(ImVec2(currentX, startY));
+
+        // Render button
         render(buttons[i]);
 
-        if (i < buttons.size() - 1)
-        {
-            ImGui::SameLine(0.0f, spacing);
-        }
+        // Update position for next button
+        currentX += buttons[i].size.x + spacing;
     }
 }
 
@@ -957,14 +1693,13 @@ void Widgets::Label::render(const LabelConfig &config)
 {
     bool hasIcon = !config.icon.value().empty();
 
+    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + config.iconPaddingX.value());
+    ImGui::SetCursorPosY(ImGui::GetCursorPosY() + config.iconPaddingY.value());
+
     if (hasIcon)
     {
-        // Apply padding before rendering the icon
-        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + config.iconPaddingX.value());
-        ImGui::SetCursorPosY(ImGui::GetCursorPosY() + config.iconPaddingY.value());
-
         // Select font based on icon style
-        if (config.iconSolid)
+        if (config.iconSolid.value())
         {
             ImGui::PushFont(g_iconFonts.solid);
         }
@@ -981,7 +1716,7 @@ void Widgets::Label::render(const LabelConfig &config)
     }
 
     // Render label text with specified font weight
-    if (config.isBold)
+    if (config.isBold.value())
     {
         ImGui::PushFont(g_mdFonts.bold);
     }
@@ -996,19 +1731,186 @@ void Widgets::Label::render(const LabelConfig &config)
 }
 
 /**
+ * @brief Renders a label with the specified configuration inside a rectangle.
+ *
+ * @param config The configuration for the input field.
+ * @param rectMin The minimum position of the rectangle.
+ * @param rectMax The maximum position of the rectangle.
+ *
+ * @see Config::LabelConfig
+ */
+void Widgets::Label::render(const LabelConfig &config, ImVec2 rectMin, ImVec2 rectMax)
+{
+    bool hasIcon = !config.icon.value().empty();
+    bool hasLabel = !config.label.empty();
+
+    // Compute the size of the rectangle
+    ImVec2 rectSize = ImVec2(rectMax.x - rectMin.x, rectMax.y - rectMin.y);
+
+    // Push a clipping rectangle to constrain rendering within the button
+    ImGui::PushClipRect(rectMin, rectMax, true);
+
+    // Calculate the size of the icon if present
+    ImVec2 iconSize(0, 0);
+    float iconPlusGapWidth = 0.0f;
+    if (hasIcon)
+    {
+        if (config.iconSolid.value())
+        {
+            ImGui::PushFont(g_iconFonts.solid);
+        }
+        else
+        {
+            ImGui::PushFont(g_iconFonts.regular);
+        }
+        iconSize = ImGui::CalcTextSize(config.icon.value().c_str());
+        ImGui::PopFont();
+
+        // Add gap to icon width if we have both icon and label
+        iconPlusGapWidth = hasLabel ? (iconSize.x + config.gap.value_or(0.0f)) : iconSize.x;
+    }
+
+    // Calculate available width for label
+    float availableLabelWidth = rectSize.x - iconPlusGapWidth - (2 * config.gap.value_or(5.0f));
+
+    // Calculate label size and prepare truncated text if needed
+    ImVec2 labelSize(0, 0);
+    std::string truncatedLabel;
+    if (hasLabel)
+    {
+        if (config.isBold.value())
+        {
+            ImGui::PushFont(g_mdFonts.bold);
+        }
+        else
+        {
+            ImGui::PushFont(g_mdFonts.regular);
+        }
+
+        labelSize = ImGui::CalcTextSize(config.label.c_str());
+
+        // If label is too wide, we need to truncate it
+        if (labelSize.x > availableLabelWidth)
+        {
+            float ellipsisWidth = ImGui::CalcTextSize("...").x;
+            float targetWidth = availableLabelWidth - ellipsisWidth;
+
+            // Binary search to find the right truncation point
+            int left = 0;
+            int right = config.label.length();
+            truncatedLabel = config.label;
+
+            while (left < right)
+            {
+                int mid = (left + right + 1) / 2;
+                std::string testStr = config.label.substr(0, mid);
+                float testWidth = ImGui::CalcTextSize(testStr.c_str()).x;
+
+                if (testWidth <= targetWidth)
+                {
+                    left = mid;
+                }
+                else
+                {
+                    right = mid - 1;
+                }
+            }
+
+            truncatedLabel = config.label.substr(0, left) + "...";
+            labelSize = ImGui::CalcTextSize(truncatedLabel.c_str());
+        }
+        else
+        {
+            truncatedLabel = config.label;
+        }
+
+        ImGui::PopFont();
+    }
+
+    // Calculate total content width and height
+    float contentWidth = iconPlusGapWidth + labelSize.x;
+    float contentHeight = std::max(labelSize.y, iconSize.y);
+
+    // Calculate vertical offset to center content
+    float verticalOffset = rectMin.y + (rectSize.y - contentHeight) / 2.0f;
+
+    // Calculate horizontal offset based on alignment
+    float horizontalOffset;
+    Alignment alignment = config.alignment.value_or(Alignment::LEFT);
+    switch (alignment)
+    {
+    case Alignment::CENTER:
+        horizontalOffset = rectMin.x + (rectSize.x - contentWidth) / 2.0f;
+        break;
+    case Alignment::RIGHT:
+        horizontalOffset = rectMin.x + (rectSize.x - contentWidth) - config.gap.value_or(5.0f);
+        break;
+    default:
+        horizontalOffset = rectMin.x + config.gap.value_or(5.0f);
+        break;
+    }
+
+    // Set the cursor position to the calculated offsets
+    ImGui::SetCursorScreenPos(ImVec2(horizontalOffset, verticalOffset));
+
+    // Now render the icon and/or label
+    if (hasIcon)
+    {
+        if (config.iconSolid.value())
+        {
+            ImGui::PushFont(g_iconFonts.solid);
+        }
+        else
+        {
+            ImGui::PushFont(g_iconFonts.regular);
+        }
+
+        ImGui::TextUnformatted(config.icon.value().c_str());
+        if (hasLabel)
+        {
+            ImGui::SameLine(0.0f, config.gap.value_or(0.0f));
+        }
+
+        ImGui::PopFont();
+    }
+
+    // Render truncated label text with specified font weight, if it exists
+    if (hasLabel)
+    {
+        if (config.isBold.value())
+        {
+            ImGui::PushFont(g_mdFonts.bold);
+        }
+        else
+        {
+            ImGui::PushFont(g_mdFonts.regular);
+        }
+
+        ImGui::TextUnformatted(truncatedLabel.c_str());
+        ImGui::PopFont();
+    }
+
+    // Pop the clipping rectangle
+    ImGui::PopClipRect();
+}
+
+/**
  * @brief Sets the style for the input field.
  *
  * @param frameRounding The rounding of the input field frame.
  * @param framePadding The padding of the input field frame.
  * @param bgColor The background color of the input field.
  */
-void Widgets::InputField::setStyle(float frameRounding, const ImVec2 &framePadding, const ImVec4 &bgColor, const ImVec4 &hoverColor, const ImVec4 &activeColor)
+void Widgets::InputField::setStyle(const InputFieldConfig &config)
 {
-    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, frameRounding);
-    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, framePadding);
-    ImGui::PushStyleColor(ImGuiCol_FrameBg, bgColor);
-    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, hoverColor);
-    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, activeColor);
+    ImGui::PushStyleVar(ImGuiStyleVar_FrameRounding, config.frameRounding.value());
+    ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, config.padding.value());
+    ImGui::PushStyleColor(ImGuiCol_FrameBg, config.backgroundColor.value());
+    ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, config.hoverColor.value());
+    ImGui::PushStyleColor(ImGuiCol_FrameBgActive, config.activeColor.value());
+
+    // Set text color
+    ImGui::PushStyleColor(ImGuiCol_Text, config.textColor.value());
 }
 
 /**
@@ -1016,7 +1918,7 @@ void Widgets::InputField::setStyle(float frameRounding, const ImVec2 &framePaddi
  */
 void Widgets::InputField::restoreStyle()
 {
-    ImGui::PopStyleColor(3); // Restore FrameBg
+    ImGui::PopStyleColor(4); // Restore FrameBg
     ImGui::PopStyleVar(2);   // Restore frame rounding and padding
 }
 
@@ -1057,36 +1959,32 @@ void Widgets::InputField::handleSubmission(char *inputText, bool &focusInputFiel
  * @param processInput The function to process the input text.
  * @param focusInputField The flag to focus the input field.
  */
-void Widgets::InputField::renderMultiline(
-    const char *label, char *inputTextBuffer, const ImVec2 &inputSize,
-    const std::string &placeholderText, ImGuiInputTextFlags inputFlags,
-    const std::function<void(const std::string &)> &processInput, bool &focusInputField)
+void Widgets::InputField::renderMultiline(const InputFieldConfig &config)
 {
     // Set style
-    Widgets::InputField::setStyle(Config::InputField::FRAME_ROUNDING, ImVec2(Config::FRAME_PADDING_X, Config::FRAME_PADDING_Y),
-                                  Config::InputField::INPUT_FIELD_BG_COLOR, Config::InputField::INPUT_FIELD_BG_COLOR, Config::InputField::INPUT_FIELD_BG_COLOR);
+    Widgets::InputField::setStyle(config);
 
     // Set keyboard focus initially, then reset
-    if (focusInputField)
+    if (config.focusInputField)
     {
         ImGui::SetKeyboardFocusHere();
-        focusInputField = false;
+        config.focusInputField = false;
     }
 
-    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + inputSize.x - 15);
+    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + config.size.x - 15);
 
     // Draw the input field
-    if (ImGui::InputTextMultiline(label, inputTextBuffer, Config::InputField::TEXT_SIZE, inputSize, inputFlags) && processInput)
+    if (ImGui::InputTextMultiline(config.id.c_str(), config.inputTextBuffer.data(), Config::InputField::TEXT_SIZE, config.size, config.flags.value()) && config.processInput.has_value())
     {
-        Widgets::InputField::handleSubmission(inputTextBuffer, focusInputField, processInput,
-                                              (inputFlags & ImGuiInputTextFlags_CtrlEnterForNewLine) ||
-                                                  (inputFlags & ImGuiInputTextFlags_ShiftEnterForNewLine));
+        Widgets::InputField::handleSubmission(config.inputTextBuffer.data(), config.focusInputField, config.processInput.value(),
+                                              (config.flags.value() & ImGuiInputTextFlags_CtrlEnterForNewLine) ||
+                                                  (config.flags.value() & ImGuiInputTextFlags_ShiftEnterForNewLine));
     }
 
     ImGui::PopTextWrapPos();
 
     // Draw placeholder if input is empty
-    if (strlen(inputTextBuffer) == 0)
+    if (strlen(config.inputTextBuffer.data()) == 0)
     {
         // Allow overlapping rendering
         ImGui::SetItemAllowOverlap();
@@ -1104,7 +2002,7 @@ void Widgets::InputField::renderMultiline(
         ImU32 placeholderColor = ImGui::GetColorU32(ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
 
         // Calculate the maximum width for the placeholder text
-        float wrapWidth = inputSize.x - (2 * Config::FRAME_PADDING_X);
+        float wrapWidth = config.size.x - (2 * Config::FRAME_PADDING_X);
 
         // Render the placeholder text using AddText with wrapping
         drawList->AddText(
@@ -1112,7 +2010,7 @@ void Widgets::InputField::renderMultiline(
             ImGui::GetFontSize(),
             placeholderPos,
             placeholderColor,
-            placeholderText.c_str(),
+            config.placeholderText.value().c_str(),
             nullptr,
             wrapWidth);
     }
@@ -1132,30 +2030,29 @@ void Widgets::InputField::renderMultiline(
  * @param processInput The function to process the input text.
  * @param focusInputField The flag to focus the input field.
  */
-void Widgets::InputField::render(
-    const char *label, char *inputTextBuffer, const ImVec2 &inputSize,
-    const std::string &placeholderText, ImGuiInputTextFlags inputFlags,
-    const std::function<void(const std::string &)> &processInput, bool &focusInputField)
+void Widgets::InputField::render(const InputFieldConfig &config)
 {
     // Set style
-    Widgets::InputField::setStyle(5.0F, ImVec2(Config::FRAME_PADDING_X, Config::FRAME_PADDING_Y),
-                                  Config::InputField::INPUT_FIELD_BG_COLOR, Config::InputField::INPUT_FIELD_BG_COLOR, Config::InputField::INPUT_FIELD_BG_COLOR);
+    Widgets::InputField::setStyle(config);
 
     // Set keyboard focus initially, then reset
-    if (focusInputField)
+    if (config.focusInputField)
     {
         ImGui::SetKeyboardFocusHere();
-        focusInputField = false;
+        config.focusInputField = false;
     }
 
+    // set size of input field
+    ImGui::PushItemWidth(config.size.x);
+
     // Draw the single-line input field
-    if (ImGui::InputText(label, inputTextBuffer, Config::InputField::TEXT_SIZE, inputFlags) && processInput)
+    if (ImGui::InputText(config.id.c_str(), config.inputTextBuffer.data(), Config::InputField::TEXT_SIZE, config.flags.value()) && config.processInput.has_value())
     {
-        Widgets::InputField::handleSubmission(inputTextBuffer, focusInputField, processInput, false);
+        Widgets::InputField::handleSubmission(config.inputTextBuffer.data(), config.focusInputField, config.processInput.value(), false);
     }
 
     // Draw placeholder if input is empty
-    if (strlen(inputTextBuffer) == 0)
+    if (strlen(config.inputTextBuffer.data()) == 0)
     {
         // Allow overlapping rendering
         ImGui::SetItemAllowOverlap();
@@ -1174,7 +2071,7 @@ void Widgets::InputField::render(
         ImU32 placeholderColor = ImGui::GetColorU32(ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
 
         // Render the placeholder text
-        drawList->AddText(placeholderPos, placeholderColor, placeholderText.c_str());
+        drawList->AddText(placeholderPos, placeholderColor, config.placeholderText.value().c_str());
     }
 
     // Restore original style
@@ -1383,14 +2280,14 @@ auto Widgets::ComboBox::render(const char *label, const char **items, int itemsC
  * @param msg The message object containing information about the message.
  * @param index The index used to set the ImGui ID.
  */
-void ChatWindow::MessageBubble::pushIDAndColors(const Message &msg, int index)
+void ChatWindow::MessageBubble::pushIDAndColors(const Message msg, int index)
 {
     ImGui::PushID(index);
 
     ImVec4 userColor = ImVec4(Config::UserColor::COMPONENT, Config::UserColor::COMPONENT, Config::UserColor::COMPONENT, 1.0F); // #2f2f2f for user
     ImVec4 transparentColor = ImVec4(0.0F, 0.0F, 0.0F, 0.0F);                                                                  // Transparent for bot
 
-    ImVec4 bgColor = msg.isUserMessage() ? userColor : transparentColor;
+    ImVec4 bgColor = msg.role == "user" ? userColor : transparentColor;
     ImGui::PushStyleColor(ImGuiCol_ChildBg, bgColor);
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0F, 1.0F, 1.0F, 1.0F)); // White text
 }
@@ -1405,11 +2302,11 @@ void ChatWindow::MessageBubble::pushIDAndColors(const Message &msg, int index)
  *         - bubblePadding: The padding inside the message bubble.
  *         - paddingX: The horizontal padding to align the bubble.
  */
-auto ChatWindow::MessageBubble::calculateDimensions(const Message &msg, float windowWidth) -> std::tuple<float, float, float>
+auto ChatWindow::MessageBubble::calculateDimensions(const Message msg, float windowWidth) -> std::tuple<float, float, float>
 {
     float bubbleWidth = windowWidth * Config::Bubble::WIDTH_RATIO; // 75% width for both user and bot
     float bubblePadding = Config::Bubble::PADDING;                 // Padding inside the bubble
-    float paddingX = msg.isUserMessage()
+    float paddingX = msg.role == "user"
                          ? (windowWidth - bubbleWidth - Config::Bubble::RIGHT_PADDING)
                          : Config::Bubble::BOT_PADDING_X;
 
@@ -1423,12 +2320,12 @@ auto ChatWindow::MessageBubble::calculateDimensions(const Message &msg, float wi
  * @param bubbleWidth The width of the message bubble.
  * @param bubblePadding The padding inside the message bubble.
  */
-void ChatWindow::MessageBubble::renderMessageContent(const Message &msg, float bubbleWidth, float bubblePadding)
+void ChatWindow::MessageBubble::renderMessageContent(const Message msg, float bubbleWidth, float bubblePadding)
 {
     ImGui::SetCursorPosX(bubblePadding);
     ImGui::SetCursorPosY(bubblePadding);
     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + bubbleWidth - (bubblePadding * 2));
-    ImGui::TextWrapped("%s", msg.getContent().c_str());
+    ImGui::TextWrapped("%s", msg.content.c_str());
     ImGui::PopTextWrapPos();
 }
 
@@ -1438,14 +2335,14 @@ void ChatWindow::MessageBubble::renderMessageContent(const Message &msg, float b
  * @param msg The message object containing the timestamp to render.
  * @param bubblePadding The padding to apply on the left side of the timestamp.
  */
-void ChatWindow::MessageBubble::renderTimestamp(const Message &msg, float bubblePadding)
+void ChatWindow::MessageBubble::renderTimestamp(const Message msg, float bubblePadding)
 {
     // Set timestamp color to a lighter gray
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7F, 0.7F, 0.7F, 1.0F)); // Light gray for timestamp
 
     ImGui::SetCursorPosY(ImGui::GetWindowHeight() - ImGui::GetTextLineHeightWithSpacing() - (bubblePadding - Config::Timing::TIMESTAMP_OFFSET_Y)); // Align timestamp at the bottom
     ImGui::SetCursorPosX(bubblePadding);                                                                                                           // Align timestamp to the left
-    ImGui::TextWrapped("%s", msg.getTimestamp().c_str());
+    ImGui::TextWrapped("%s", timePointToString(msg.timestamp).c_str());
 
     ImGui::PopStyleColor(); // Restore original text color
 }
@@ -1458,22 +2355,21 @@ void ChatWindow::MessageBubble::renderTimestamp(const Message &msg, float bubble
  * @param bubbleWidth The width of the message bubble.
  * @param bubblePadding The padding inside the message bubble.
  */
-void ChatWindow::MessageBubble::renderButtons(const Message &msg, int index, float bubbleWidth, float bubblePadding)
+void ChatWindow::MessageBubble::renderButtons(const Message msg, int index, float bubbleWidth, float bubblePadding)
 {
-    ImVec2 textSize = ImGui::CalcTextSize(msg.getContent().c_str(), nullptr, true, bubbleWidth - bubblePadding * 2);
+    ImVec2 textSize = ImGui::CalcTextSize(msg.content.c_str(), nullptr, true, bubbleWidth - bubblePadding * 2);
     float buttonPosY = textSize.y + bubblePadding;
 
-    if (msg.isUserMessage())
+    if (msg.role == "user")
     {
         ButtonConfig copyButtonConfig{
             .id = "##copy" + std::to_string(index),
             .label = std::nullopt,
             .icon = ICON_FA_COPY,
             .size = ImVec2(Config::Button::WIDTH, 0),
-            .padding = Config::Button::SPACING,
             .onClick = [&msg]()
             {
-                ImGui::SetClipboardText(msg.getContent().c_str());
+                ImGui::SetClipboardText(msg.content.c_str());
                 std::cout << "Copied message content to clipboard" << std::endl;
             }};
 
@@ -1491,7 +2387,6 @@ void ChatWindow::MessageBubble::renderButtons(const Message &msg, int index, flo
             .label = std::nullopt,
             .icon = ICON_FA_THUMBS_UP,
             .size = ImVec2(Config::Button::WIDTH, 0),
-            .padding = Config::Button::SPACING,
             .onClick = [index]()
             {
                 std::cout << "Like button clicked for message " << index << std::endl;
@@ -1502,7 +2397,6 @@ void ChatWindow::MessageBubble::renderButtons(const Message &msg, int index, flo
             .label = std::nullopt,
             .icon = ICON_FA_THUMBS_DOWN,
             .size = ImVec2(Config::Button::WIDTH, 0),
-            .padding = Config::Button::SPACING,
             .onClick = [index]()
             {
                 std::cout << "Dislike button clicked for message " << index << std::endl;
@@ -1523,7 +2417,7 @@ void ChatWindow::MessageBubble::renderButtons(const Message &msg, int index, flo
  * @param msg The message object to be rendered.
  * @param index The index of the message in the list.
  */
-void ChatWindow::MessageBubble::renderMessage(const Message &msg, int index, float contentWidth)
+void ChatWindow::MessageBubble::renderMessage(const Message msg, int index, float contentWidth)
 {
     ChatWindow::MessageBubble::pushIDAndColors(msg, index);
 
@@ -1531,12 +2425,12 @@ void ChatWindow::MessageBubble::renderMessage(const Message &msg, int index, flo
 
     auto [bubbleWidth, bubblePadding, paddingX] = ChatWindow::MessageBubble::calculateDimensions(msg, windowWidth);
 
-    ImVec2 textSize = ImGui::CalcTextSize(msg.getContent().c_str(), nullptr, true, bubbleWidth - bubblePadding * 2);
+    ImVec2 textSize = ImGui::CalcTextSize(msg.content.c_str(), nullptr, true, bubbleWidth - bubblePadding * 2);
     float estimatedHeight = textSize.y + bubblePadding * 2 + ImGui::GetTextLineHeightWithSpacing(); // Add padding and spacing for buttons
 
     ImGui::SetCursorPosX(paddingX);
 
-    if (msg.isUserMessage())
+    if (msg.role == "user")
     {
         ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, Config::InputField::CHILD_ROUNDING); // Adjust the rounding as desired
     }
@@ -1558,7 +2452,7 @@ void ChatWindow::MessageBubble::renderMessage(const Message &msg, int index, flo
     ImGui::EndChild();
     ImGui::EndGroup();
 
-    if (msg.isUserMessage())
+    if (msg.role == "user")
     {
         ImGui::PopStyleVar(); // Pop ChildRounding
     }
@@ -1573,10 +2467,10 @@ void ChatWindow::MessageBubble::renderMessage(const Message &msg, int index, flo
  *
  * @param chatHistory The chat history object containing the messages to be displayed.
  */
-void ChatWindow::renderChatHistory(const ChatHistory &chatHistory, float contentWidth)
+void ChatWindow::renderChatHistory(const ChatHistory chatHistory, float contentWidth)
 {
     static size_t lastMessageCount = 0;
-    size_t currentMessageCount = chatHistory.getMessages().size();
+    size_t currentMessageCount = chatHistory.messages.size();
 
     // Check if new messages have been added
     bool newMessageAdded = currentMessageCount > lastMessageCount;
@@ -1587,7 +2481,7 @@ void ChatWindow::renderChatHistory(const ChatHistory &chatHistory, float content
     bool isAtBottom = (scrollMaxY <= 0.0F) || (scrollY >= scrollMaxY - 1.0F);
 
     // Render messages
-    const auto &messages = chatHistory.getMessages();
+    const std::vector<Message> &messages = chatHistory.messages;
     for (size_t i = 0; i < messages.size(); ++i)
     {
         ChatWindow::MessageBubble::renderMessage(messages[i], static_cast<int>(i), contentWidth);
@@ -1604,6 +2498,102 @@ void ChatWindow::renderChatHistory(const ChatHistory &chatHistory, float content
 }
 
 /**
+ * @brief Renders the rename chat dialog.
+ *
+ * @param showRenameChatDialog A boolean reference to control the visibility of the dialog.
+ */
+void ChatWindow::renderRenameChatDialog(bool &showRenameChatDialog)
+{
+    if (showRenameChatDialog)
+    {
+        ImGui::OpenPopup("Rename Chat");
+
+        // Reset the flag to prevent the dialog from opening multiple times
+        showRenameChatDialog = false;
+    }
+
+    // Change the window title background color
+    ImGui::PushStyleColor(ImGuiCol_TitleBg, ImVec4(0.125F, 0.125F, 0.125F, 1.0F));       // Inactive state color
+    ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.125F, 0.125F, 0.125F, 1.0F)); // Active state color
+
+    // Apply rounded corners to the window
+    ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 10.0f);
+
+    if (ImGui::BeginPopupModal("Rename Chat", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        static bool focusNewChatName = true;
+        static std::string newChatName(256, '\0');
+
+        // input parameters is needed to process the input
+        auto processInput = [](const std::string &input)
+        {
+            g_chatManager->renameCurrentChat(input);
+            ImGui::CloseCurrentPopup();
+            memset(newChatName.data(), 0, sizeof(newChatName));
+        };
+
+        // Set the new chat name to the current chat name by default
+        if (strlen(newChatName.data()) == 0)
+        {
+            strncpy(newChatName.data(), g_chatManager->getCurrentChatHistory().name.c_str(), sizeof(newChatName));
+            newChatName[sizeof(newChatName) - 1] = '\0'; // Ensure null-terminated
+        }
+
+        Widgets::InputField::render(
+            InputFieldConfig{
+                .id = "##newchatname",
+                .size = ImVec2(250, 0),
+                .inputTextBuffer = newChatName,
+                .placeholderText = "Enter new chat name...",
+                .flags = ImGuiInputTextFlags_EnterReturnsTrue,
+                .processInput = processInput,
+                .focusInputField = focusNewChatName,
+                .frameRounding = 5.0F});
+
+        ImGui::Spacing();
+
+        ButtonConfig confirmRename{
+            .id = "##confirmRename",
+            .label = "Rename",
+            .icon = std::nullopt,
+            .size = ImVec2(122.5F, 0),
+            .onClick = []()
+            {
+                g_chatManager->renameCurrentChat(newChatName);
+                ImGui::CloseCurrentPopup();
+                memset(newChatName.data(), 0, sizeof(newChatName));
+            },
+            .iconSolid = false,
+            .backgroundColor = RGBAToImVec4(26, 95, 180, 255),
+            .hoverColor = RGBAToImVec4(53, 132, 228, 255),
+            .activeColor = RGBAToImVec4(26, 95, 180, 255)};
+        ButtonConfig cancelRename{
+            .id = "##cancelRename",
+            .label = "Cancel",
+            .icon = std::nullopt,
+            .size = ImVec2(122.5F, 0),
+            .onClick = []()
+            {
+                ImGui::CloseCurrentPopup();
+                memset(newChatName.data(), 0, sizeof(newChatName));
+            },
+            .iconSolid = false,
+            .backgroundColor = Config::Color::SECONDARY,
+            .hoverColor = Config::Color::PRIMARY,
+            .activeColor = Config::Color::SECONDARY};
+
+        std::vector<ButtonConfig> renameChatDialogButtons = {confirmRename, cancelRename};
+        Widgets::Button::renderGroup(renameChatDialogButtons, ImGui::GetCursorPosX(), ImGui::GetCursorPosY(), 10);
+
+        ImGui::EndPopup();
+    }
+
+    // Revert to the previous style
+    ImGui::PopStyleColor(2);
+    ImGui::PopStyleVar();
+}
+
+/**
  * @brief Renders the chat window to cover the full width and height of the application window,
  *        minus the sidebar width.
  *
@@ -1611,15 +2601,15 @@ void ChatWindow::renderChatHistory(const ChatHistory &chatHistory, float content
  * @param inputHeight The height of the input field.
  * @param sidebarWidth The current width of the sidebar.
  */
-void ChatWindow::render(float inputHeight, float sidebarWidth)
+void ChatWindow::render(float inputHeight, float leftSidebarWidth, float rightSidebarWidth)
 {
     ImGuiIO &imguiIO = ImGui::GetIO();
 
     // Calculate the size of the chat window based on the sidebar width
-    ImVec2 windowSize = ImVec2(imguiIO.DisplaySize.x - sidebarWidth, imguiIO.DisplaySize.y);
+    ImVec2 windowSize = ImVec2(imguiIO.DisplaySize.x - rightSidebarWidth - leftSidebarWidth, imguiIO.DisplaySize.y);
 
     // Set window to cover the remaining display area
-    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowPos(ImVec2(leftSidebarWidth, 0), ImGuiCond_Always);
     ImGui::SetNextWindowSize(windowSize, ImGuiCond_Always);
 
     ImGuiWindowFlags windowFlags = ImGuiWindowFlags_NoTitleBar |
@@ -1636,6 +2626,37 @@ void ChatWindow::render(float inputHeight, float sidebarWidth)
     float availableWidth = ImGui::GetContentRegionAvail().x;
     float contentWidth = (availableWidth < Config::CHAT_WINDOW_CONTENT_WIDTH) ? availableWidth : Config::CHAT_WINDOW_CONTENT_WIDTH;
     float paddingX = (availableWidth - contentWidth) / 2.0F;
+    float renameButtonWidth = 128.0F;
+
+    // Center the rename button horizontally
+    if (paddingX > 0.0F)
+    {
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + paddingX + (contentWidth - renameButtonWidth) / 2.0F);
+    }
+
+    static bool showRenameChatDialog = false;
+
+    // Render the rename button
+    ButtonConfig renameButtonConfig{
+        .id = "##renameChat",
+        .label = g_chatManager->getCurrentChatHistory().name,
+        .icon = ICON_FA_PEN,
+        .size = ImVec2(renameButtonWidth, 0),
+        .gap = 10.0F,
+        .onClick = []()
+        {
+            showRenameChatDialog = true;
+        }};
+
+    Widgets::Button::render(renameButtonConfig);
+
+    // Render the rename chat dialog
+    ChatWindow::renderRenameChatDialog(showRenameChatDialog);
+
+    ImGui::Spacing();
+    ImGui::Spacing();
+    ImGui::Spacing();
+    ImGui::Spacing();
 
     // Center the content horizontally
     if (paddingX > 0.0F)
@@ -1648,7 +2669,7 @@ void ChatWindow::render(float inputHeight, float sidebarWidth)
     ImGui::BeginChild("ChatHistoryRegion", ImVec2(contentWidth, availableHeight), false, ImGuiWindowFlags_NoScrollbar);
 
     // Render chat history
-    ChatWindow::renderChatHistory(chatBot.getChatHistory(), contentWidth);
+    ChatWindow::renderChatHistory(g_chatManager->getCurrentChatHistory(), contentWidth);
 
     ImGui::EndChild(); // End of ChatHistoryRegion
 
@@ -1668,10 +2689,6 @@ void ChatWindow::render(float inputHeight, float sidebarWidth)
     ImGui::PopStyleVar();
 }
 
-//-----------------------------------------------------------------------------
-// [SECTION] Input Field Functions
-//-----------------------------------------------------------------------------
-
 /**
  * @brief Renders the input field with text wrapping and no horizontal scrolling.
  *
@@ -1680,23 +2697,119 @@ void ChatWindow::render(float inputHeight, float sidebarWidth)
  */
 void ChatWindow::renderInputField(float inputHeight, float inputWidth)
 {
-    static std::array<char, Config::InputField::TEXT_SIZE> inputTextBuffer = {0};
+    static std::string inputTextBuffer(Config::InputField::TEXT_SIZE, '\0');
     static bool focusInputField = true;
 
     // Define the input size
     ImVec2 inputSize = ImVec2(inputWidth, inputHeight);
 
     // Define a lambda to process the submitted input
-    auto processInput = [](const std::string &input)
+    auto processInput = [&](const std::string &input)
     {
-        chatBot.processUserInput(input);
+        g_chatManager->handleUserMessage(input);
+        g_chatManager->handleAssistantMessage(input);
     };
 
     // Render the input field widget with a placeholder
-    Widgets::InputField::renderMultiline("##chatinput", inputTextBuffer.data(), inputSize,
-                                         "Type a message and press Enter to send (Ctrl+Enter or Shift+Enter for new line)",
-                                         ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine | ImGuiInputTextFlags_ShiftEnterForNewLine,
-                                         processInput, focusInputField);
+    Widgets::InputField::renderMultiline(
+        InputFieldConfig{
+            .id = "##chatinput",
+            .size = inputSize,
+            .inputTextBuffer = inputTextBuffer,
+            .placeholderText = "Type a message and press Enter to send (Ctrl+Enter or Shift+Enter for new line)",
+            .flags = ImGuiInputTextFlags_EnterReturnsTrue | ImGuiInputTextFlags_CtrlEnterForNewLine | ImGuiInputTextFlags_ShiftEnterForNewLine,
+            .processInput = processInput,
+            .focusInputField = focusInputField});
+}
+
+//-----------------------------------------------------------------------------
+// [SECTION] Chat History Sidebar Rendering Functions
+//-----------------------------------------------------------------------------
+
+/**
+ * @brief Renders the chat history sidebar with the specified width.
+ *
+ * @param sidebarWidth The width of the sidebar.
+ */
+void ChatHistorySidebar::render(float &sidebarWidth)
+{
+    ImGuiIO &io = ImGui::GetIO();
+    const float sidebarHeight = io.DisplaySize.y;
+
+    ImGui::SetNextWindowPos(ImVec2(0, 0), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(sidebarWidth, sidebarHeight), ImGuiCond_Always);
+    ImGui::SetNextWindowSizeConstraints(
+        ImVec2(Config::ChatHistorySidebar::MIN_SIDEBAR_WIDTH, sidebarHeight),
+        ImVec2(Config::ChatHistorySidebar::MAX_SIDEBAR_WIDTH, sidebarHeight));
+
+    ImGuiWindowFlags sidebarFlags = ImGuiWindowFlags_NoMove |
+                                    ImGuiWindowFlags_NoCollapse |
+                                    ImGuiWindowFlags_NoTitleBar |
+                                    ImGuiWindowFlags_NoBackground |
+                                    ImGuiWindowFlags_NoScrollbar;
+
+    ImGui::Begin("Chat History", nullptr, sidebarFlags);
+
+    ImVec2 currentSize = ImGui::GetWindowSize();
+    sidebarWidth = currentSize.x;
+
+    ButtonConfig createNewChatButtonConfig{
+        .id = "##createNewChat",
+        .label = "New Chat",
+        .icon = ICON_FA_COMMENT_MEDICAL,
+        .size = ImVec2(sidebarWidth - 20, 0),
+        .gap = 10.0F,
+        .onClick = []()
+        {
+            g_chatManager->createNewChat();
+        },
+        .backgroundColor = RGBAToImVec4(26, 95, 180, 128),
+        .hoverColor = RGBAToImVec4(53, 132, 228, 255),
+        .activeColor = RGBAToImVec4(53, 132, 228, 255)};
+
+    Widgets::Button::render(createNewChatButtonConfig);
+
+    ImGui::Spacing();
+    ImGui::Spacing();
+    ImGui::Separator();
+    ImGui::Spacing();
+    ImGui::Spacing();
+
+    Widgets::Label::render(
+        LabelConfig{.id = "##chathistory",
+                    .label = "Recents",
+                    .size = ImVec2(Config::Icon::DEFAULT_FONT_SIZE, 0),
+                    .iconPaddingX = 10.0F,
+                    .isBold = true});
+
+    ImGui::Spacing();
+
+    // Render chat history buttons scroll region
+    ImGui::BeginChild("ChatHistoryButtons", ImVec2(sidebarWidth, ImGui::GetContentRegionAvail().y - 10), false, ImGuiWindowFlags_NoScrollbar);
+
+    for (size_t i = 0; i < g_chatManager->getChatHistoryCount(); ++i)
+    {
+        const ChatHistory chat = g_chatManager->getChatHistory(i);
+
+        ButtonConfig chatButtonConfig{
+            .id = "##chat" + std::to_string(i),
+            .label = chat.name,
+            .icon = ICON_FA_COMMENT,
+            .size = ImVec2(sidebarWidth - 20, 0),
+            .gap = 10.0F,
+            .onClick = [i]()
+            {
+                g_chatManager->switchChat(i);
+            },
+            .state = (i == g_chatManager->getCurrentChatIndex()) ? ButtonState::ACTIVE : ButtonState::NORMAL,
+            .alignment = Alignment::LEFT};
+
+        Widgets::Button::render(chatButtonConfig);
+    }
+
+    ImGui::EndChild();
+
+    ImGui::End();
 }
 
 //-----------------------------------------------------------------------------
@@ -1708,7 +2821,7 @@ void ChatWindow::renderInputField(float inputHeight, float inputWidth)
  *
  * @param sidebarWidth The width of the sidebar.
  */
-void ModelSettings::renderSamplingSettings(const float sidebarWidth)
+void ModelPresetSidebar::renderSamplingSettings(const float sidebarWidth)
 {
     ImGui::Spacing();
     ImGui::Spacing();
@@ -1734,16 +2847,16 @@ void ModelSettings::renderSamplingSettings(const float sidebarWidth)
 
     // Provide a processInput lambda to update the systemPrompt
     Widgets::InputField::renderMultiline(
-        "##systemprompt",
-        &currentPreset.systemPrompt[0], // Ensure mutable access
-        inputSize,
-        "Enter your system prompt here...",
-        0,
-        [&](const std::string &input)
-        {
-            currentPreset.systemPrompt = input; // Update the string with user input
-        },
-        focusSystemPrompt);
+        InputFieldConfig{
+            .id = "##systemprompt",
+            .size = inputSize,
+            .inputTextBuffer = currentPreset.systemPrompt, // Ensure mutable access
+            .placeholderText = "Enter your system prompt here...",
+            .processInput = [&](const std::string &input)
+            {
+                currentPreset.systemPrompt = input; // Update the string with user input
+            },
+            .focusInputField = focusSystemPrompt});
 
     ImGui::Spacing();
     ImGui::Spacing();
@@ -1772,18 +2885,39 @@ void ModelSettings::renderSamplingSettings(const float sidebarWidth)
 }
 
 /**
+ * @brief Helper function to confirm the "Save Preset As" dialog.
+ *
+ * This function is called when the user clicks the "Save" button or pressed enter in the dialog.
+ * It saves the current preset under the new name and closes the dialog.
+ */
+void ModelPresetSidebar::confirmSaveAsDialog(std::string &newPresetName)
+{
+    if (strlen(newPresetName.data()) > 0)
+    {
+        auto currentPreset = g_presetManager->getCurrentPreset();
+        currentPreset.name = newPresetName.data();
+        if (g_presetManager->savePreset(currentPreset, true))
+        {
+            g_presetManager->loadPresets(); // Reload to include the new preset
+            ImGui::CloseCurrentPopup();
+            memset(newPresetName.data(), 0, sizeof(newPresetName));
+        }
+    }
+}
+
+/**
  * @brief Renders the "Save Preset As" dialog for saving a model preset under a new name.
  */
-void ModelSettings::renderSaveAsDialog()
+void ModelPresetSidebar::renderSaveAsDialog(bool &showSaveAsDialog)
 {
-    if (ModelSettings::State::g_showSaveAsDialog)
+    if (showSaveAsDialog)
     {
         ImGui::OpenPopup("Save Preset As");
-        ModelSettings::State::g_showSaveAsDialog = false;
+        showSaveAsDialog = false;
     }
 
     // Change the window title background color
-    ImGui::PushStyleColor(ImGuiCol_TitleBg, ImVec4(0.125F, 0.125F, 0.125F, 1.0F)); // Inactive state color
+    ImGui::PushStyleColor(ImGuiCol_TitleBg, ImVec4(0.125F, 0.125F, 0.125F, 1.0F));       // Inactive state color
     ImGui::PushStyleColor(ImGuiCol_TitleBgActive, ImVec4(0.125F, 0.125F, 0.125F, 1.0F)); // Active state color
 
     // Apply rounded corners to the window
@@ -1792,15 +2926,31 @@ void ModelSettings::renderSaveAsDialog()
     if (ImGui::BeginPopupModal("Save Preset As", nullptr, ImGuiWindowFlags_AlwaysAutoResize))
     {
         static bool focusNewPresetName = true;
-        // Set the new preset name to the current preset name by default
-        if (strlen(ModelSettings::State::g_newPresetName) == 0)
+        static std::string newPresetName(256, '\0');
+
+        // input parameters is needed to process the input
+        auto processInput = [](const std::string &input)
         {
-            strncpy(ModelSettings::State::g_newPresetName, g_presetManager->getCurrentPreset().name.c_str(), sizeof(ModelSettings::State::g_newPresetName));
+            confirmSaveAsDialog(newPresetName);
+        };
+
+        // Set the new preset name to the current preset name by default
+        if (strlen(newPresetName.data()) == 0)
+        {
+            strncpy(newPresetName.data(), g_presetManager->getCurrentPreset().name.c_str(), sizeof(newPresetName));
+            newPresetName[sizeof(newPresetName) - 1] = '\0'; // Ensure null-terminated
         }
 
         Widgets::InputField::render(
-            "##newpresetname", ModelSettings::State::g_newPresetName, ImVec2(250, 0),
-            "Enter new preset name...", 0, nullptr, focusNewPresetName);
+            InputFieldConfig{
+                .id = "##newpresetname",
+                .size = ImVec2(250, 0),
+                .inputTextBuffer = newPresetName,
+                .placeholderText = "Enter new preset name...",
+                .flags = ImGuiInputTextFlags_EnterReturnsTrue,
+                .processInput = processInput,
+                .focusInputField = focusNewPresetName,
+                .frameRounding = 5.0F});
 
         ImGui::Spacing();
 
@@ -1809,20 +2959,9 @@ void ModelSettings::renderSaveAsDialog()
             .label = "Save",
             .icon = std::nullopt,
             .size = ImVec2(122.5F, 0),
-            .padding = Config::Button::SPACING,
             .onClick = []()
             {
-                if (strlen(ModelSettings::State::g_newPresetName) > 0)
-                {
-                    auto currentPreset = g_presetManager->getCurrentPreset();
-                    currentPreset.name = ModelSettings::State::g_newPresetName;
-                    if (g_presetManager->savePreset(currentPreset, true))
-                    {
-                        g_presetManager->loadPresets(); // Reload to include the new preset
-                        ImGui::CloseCurrentPopup();
-                        memset(ModelSettings::State::g_newPresetName, 0, sizeof(ModelSettings::State::g_newPresetName));
-                    }
-                }
+                confirmSaveAsDialog(newPresetName);
             },
             .iconSolid = false,
             .backgroundColor = g_presetManager->hasUnsavedChanges() ? RGBAToImVec4(26, 95, 180, 255) : RGBAToImVec4(26, 95, 180, 128),
@@ -1834,11 +2973,10 @@ void ModelSettings::renderSaveAsDialog()
             .label = "Cancel",
             .icon = std::nullopt,
             .size = ImVec2(122.5F, 0),
-            .padding = Config::Button::SPACING,
             .onClick = []()
             {
                 ImGui::CloseCurrentPopup();
-                memset(ModelSettings::State::g_newPresetName, 0, sizeof(ModelSettings::State::g_newPresetName));
+                memset(newPresetName.data(), 0, sizeof(newPresetName));
             },
             .iconSolid = false,
             .backgroundColor = Config::Color::SECONDARY,
@@ -1861,7 +2999,7 @@ void ModelSettings::renderSaveAsDialog()
  *
  * @param sidebarWidth The width of the sidebar.
  */
-void ModelSettings::renderModelPresetsSelection(const float sidebarWidth)
+void ModelPresetSidebar::renderModelPresetsSelection(const float sidebarWidth)
 {
     ImGui::Spacing();
     ImGui::Spacing();
@@ -1876,9 +3014,9 @@ void ModelSettings::renderModelPresetsSelection(const float sidebarWidth)
     ImGui::Spacing();
 
     // Get the current presets and create a vector of names
-    const auto &presets = g_presetManager->getPresets();
+    const std::vector<ModelPreset> &presets = g_presetManager->getPresets();
     std::vector<const char *> presetNames;
-    for (const auto &preset : presets)
+    for (const ModelPreset &preset : presets)
     {
         presetNames.push_back(preset.name.c_str());
     }
@@ -1903,7 +3041,6 @@ void ModelSettings::renderModelPresetsSelection(const float sidebarWidth)
         .label = std::nullopt,
         .icon = ICON_FA_TRASH,
         .size = ImVec2(24, 0),
-        .padding = Config::Button::SPACING,
         .onClick = []()
         {
             if (g_presetManager->getPresets().size() > 1)
@@ -1924,10 +3061,7 @@ void ModelSettings::renderModelPresetsSelection(const float sidebarWidth)
     // Only enable delete button if we have more than one preset
     if (presets.size() <= 1)
     {
-        deleteButton.backgroundColor = RGBAToImVec4(128, 128, 128, 128);
-        deleteButton.hoverColor = deleteButton.backgroundColor;
-        deleteButton.activeColor = deleteButton.backgroundColor;
-        deleteButton.onClick = nullptr;
+        deleteButton.state = ButtonState::DISABLED;
     }
 
     Widgets::Button::render(deleteButton);
@@ -1941,7 +3075,6 @@ void ModelSettings::renderModelPresetsSelection(const float sidebarWidth)
         .label = "Save",
         .icon = std::nullopt,
         .size = ImVec2(sidebarWidth / 2 - 15, 0),
-        .padding = Config::Button::SPACING,
         .onClick = []()
         {
             bool hasChanges = g_presetManager->hasUnsavedChanges();
@@ -1961,15 +3094,17 @@ void ModelSettings::renderModelPresetsSelection(const float sidebarWidth)
         .hoverColor = RGBAToImVec4(53, 132, 228, 255),
         .activeColor = RGBAToImVec4(26, 95, 180, 255)};
 
+    
+    static bool showSaveAsDialog = false;
+
     ButtonConfig saveAsNewButton{
         .id = "##saveasnew",
         .label = "Save as New",
         .icon = std::nullopt,
         .size = ImVec2(sidebarWidth / 2 - 15, 0),
-        .padding = Config::Button::SPACING,
         .onClick = []()
         {
-            ModelSettings::State::g_showSaveAsDialog = true;
+            showSaveAsDialog = true;
         }};
 
     std::vector<ButtonConfig> buttons = {saveButton, saveAsNewButton};
@@ -1978,7 +3113,59 @@ void ModelSettings::renderModelPresetsSelection(const float sidebarWidth)
     ImGui::Spacing();
     ImGui::Spacing();
 
-    ModelSettings::renderSaveAsDialog();
+    ModelPresetSidebar::renderSaveAsDialog(showSaveAsDialog);
+}
+
+/**
+ * @brief Exports the current model presets to a JSON file.
+ */
+void ModelPresetSidebar::exportPresets()
+{
+    nfdu8char_t *outPath = nullptr;
+    nfdu8filteritem_t filters[2] = {{"JSON Files", "json"}};
+    const nfdsavedialogu8args_t args{
+        .filterList = filters,
+        .filterCount = 1,
+    };
+    nfdresult_t result = NFD_SaveDialogU8_With(&outPath, &args);
+
+    if (result == NFD_OKAY)
+    {
+        std::filesystem::path savePath(outPath);
+        // Optionally, enforce the .json extension
+        if (savePath.extension() != ".json")
+        {
+            savePath += ".json";
+        }
+
+        // Free the memory allocated by NFD
+        NFD_FreePathU8(outPath);
+
+        // Save the preset to the chosen path
+        const auto &currentPreset = g_presetManager->getCurrentPreset();
+        bool success = g_presetManager->savePresetToPath(currentPreset, savePath.string());
+
+        if (success)
+        {
+            std::cout << "Preset saved successfully to: " << savePath << std::endl;
+            // Optionally, display a success message in the UI
+        }
+        else
+        {
+            std::cerr << "Failed to save preset to: " << savePath << std::endl;
+            // Optionally, display an error message in the UI
+        }
+    }
+    else if (result == NFD_CANCEL)
+    {
+        // User canceled the dialog; no action needed
+        std::cout << "Save dialog canceled by the user." << std::endl;
+    }
+    else
+    {
+        // Handle error
+        std::cerr << "Error from NFD: " << NFD_GetError() << std::endl;
+    }
 }
 
 /**
@@ -1986,7 +3173,7 @@ void ModelSettings::renderModelPresetsSelection(const float sidebarWidth)
  *
  * @param sidebarWidth The width of the sidebar.
  */
-void ModelSettings::render(float &sidebarWidth)
+void ModelPresetSidebar::render(float &sidebarWidth)
 {
     ImGuiIO &io = ImGui::GetIO();
     const float sidebarHeight = io.DisplaySize.y;
@@ -1994,8 +3181,8 @@ void ModelSettings::render(float &sidebarWidth)
     ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - sidebarWidth, 0), ImGuiCond_Always);
     ImGui::SetNextWindowSize(ImVec2(sidebarWidth, sidebarHeight), ImGuiCond_Always);
     ImGui::SetNextWindowSizeConstraints(
-        ImVec2(Config::ModelSettings::MIN_SIDEBAR_WIDTH, sidebarHeight),
-        ImVec2(Config::ModelSettings::MAX_SIDEBAR_WIDTH, sidebarHeight));
+        ImVec2(Config::ModelPresetSidebar::MIN_SIDEBAR_WIDTH, sidebarHeight),
+        ImVec2(Config::ModelPresetSidebar::MAX_SIDEBAR_WIDTH, sidebarHeight));
 
     ImGuiWindowFlags sidebarFlags = ImGuiWindowFlags_NoMove |
                                     ImGuiWindowFlags_NoCollapse |
@@ -2008,11 +3195,9 @@ void ModelSettings::render(float &sidebarWidth)
     ImVec2 currentSize = ImGui::GetWindowSize();
     sidebarWidth = currentSize.x;
 
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.15f, 0.15f, 0.15f, 1.0f));
-
-    renderModelPresetsSelection(sidebarWidth);
+    ModelPresetSidebar::renderModelPresetsSelection(sidebarWidth);
     ImGui::Separator();
-    renderSamplingSettings(sidebarWidth);
+    ModelPresetSidebar::renderSamplingSettings(sidebarWidth);
     ImGui::Separator();
 
     ImGui::Spacing();
@@ -2024,61 +3209,12 @@ void ModelSettings::render(float &sidebarWidth)
         .label = "Export as JSON",
         .icon = std::nullopt,
         .size = ImVec2(sidebarWidth - 20, 0),
-        .padding = Config::Button::SPACING,
-        .onClick = []()
-        {
-            nfdu8char_t *outPath = nullptr;
-            nfdu8filteritem_t filters[2] = {{"JSON Files", "json"}};
-            const nfdsavedialogu8args_t args{
-                .filterList = filters,
-                .filterCount = 1,
-            };
-            nfdresult_t result = NFD_SaveDialogU8_With(&outPath, &args);
-
-            if (result == NFD_OKAY)
-            {
-                std::filesystem::path savePath(outPath);
-                // Optionally, enforce the .json extension
-                if (savePath.extension() != ".json")
-                {
-                    savePath += ".json";
-                }
-
-                // Free the memory allocated by NFD
-                NFD_FreePathU8(outPath);
-
-                // Save the preset to the chosen path
-                const auto &currentPreset = g_presetManager->getCurrentPreset();
-                bool success = g_presetManager->savePresetToPath(currentPreset, savePath.string());
-
-                if (success)
-                {
-                    std::cout << "Preset saved successfully to: " << savePath << std::endl;
-                    // Optionally, display a success message in the UI
-                }
-                else
-                {
-                    std::cerr << "Failed to save preset to: " << savePath << std::endl;
-                    // Optionally, display an error message in the UI
-                }
-            }
-            else if (result == NFD_CANCEL)
-            {
-                // User canceled the dialog; no action needed
-                std::cout << "Save dialog canceled by the user." << std::endl;
-            }
-            else
-            {
-                // Handle error
-                std::cerr << "Error from NFD: " << NFD_GetError() << std::endl;
-            }
-        },
+        .onClick = ModelPresetSidebar::exportPresets,
         .iconSolid = false,
         .backgroundColor = Config::Color::SECONDARY,
         .hoverColor = Config::Color::PRIMARY,
         .activeColor = Config::Color::SECONDARY};
     Widgets::Button::render(exportButton);
 
-    ImGui::PopStyleColor();
     ImGui::End();
 }
