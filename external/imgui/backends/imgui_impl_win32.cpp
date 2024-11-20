@@ -82,6 +82,7 @@
 #endif
 #include <windows.h>
 #include <windowsx.h> // GET_X_LPARAM(), GET_Y_LPARAM()
+#include <math.h>
 #include <tchar.h>
 #include <dwmapi.h>
 
@@ -550,6 +551,22 @@ ImGuiKey ImGui_ImplWin32_KeyEventToImGuiKey(WPARAM wParam, LPARAM lParam)
     }
 }
 
+void ImGui_ImplWin32_WaitForEvent()
+{
+    if (!(ImGui::GetIO().ConfigFlags & ImGuiConfigFlags_EnablePowerSavingMode))
+        return;
+
+    ImGui_ImplWin32_Data* bd = ImGui_ImplWin32_GetBackendData();
+
+    BOOL window_is_hidden = !IsWindowVisible(bd->hWnd) || IsIconic(bd->hWnd);
+    double waiting_time = window_is_hidden ? INFINITE : ImGui::GetEventWaitingTime();
+    if (waiting_time > 0.0)
+    {
+        DWORD waiting_time_ms = isinf(waiting_time) ? INFINITE : (DWORD)(1000.0 * waiting_time);
+        ::MsgWaitForMultipleObjectsEx(0, NULL, waiting_time_ms, QS_ALLINPUT, MWMO_INPUTAVAILABLE | MWMO_ALERTABLE);
+    }
+}
+
 // Allow compilation with old Windows SDK. MinGW doesn't have default _WIN32_WINNT/WINVER versions.
 #ifndef WM_MOUSEHWHEEL
 #define WM_MOUSEHWHEEL 0x020E
@@ -591,6 +608,8 @@ IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hwnd, UINT msg, WPARA
     if (bd == nullptr)
         return 0;
     ImGuiIO& io = ImGui::GetIO();
+
+    io.FrameCountSinceLastInput = 0;
 
     switch (msg)
     {

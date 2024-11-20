@@ -37,6 +37,7 @@
 #include <string>
 #include <vector>
 #include <chrono>
+#include <thread>
 #include <tuple>
 #include <stack>
 #include <regex>
@@ -399,14 +400,22 @@ extern IMGUI_IMPL_API LRESULT ImGui_ImplWin32_WndProcHandler(HWND hWnd, UINT msg
 
 // Window and OpenGL context
 extern std::unique_ptr<class BorderlessWindow> g_borderlessWindow;
-extern HGLRC                                    g_openglContext;
-extern HDC                                      g_deviceContext;
+extern HGLRC                                   g_openglContext;
+extern HDC                                     g_deviceContext;
 
 // ImGui context
 extern MarkdownFonts                        g_mdFonts;
 extern IconFonts                            g_iconFonts;
 extern std::unique_ptr<class ChatManager>   g_chatManager;
 extern std::unique_ptr<class PresetManager> g_presetManager;
+
+// textures
+extern GLuint      g_gradientTexture;
+extern const char* g_quadVertexShaderSource;
+extern const char* g_quadFragmentShaderSource;
+extern GLuint      g_quadVAO;
+extern GLuint      g_quadVBO;
+extern GLuint      g_quadEBO;
 
 //-----------------------------------------------------------------------------
 // [SECTION] Classes
@@ -583,6 +592,14 @@ private:
 // fonts and icons initialization
 auto LoadIconFont(ImGuiIO& io, const char* iconFontPath, float fontSize) -> ImFont*;
 auto LoadFont(ImGuiIO& imguiIO, const char* fontPath, ImFont* fallbackFont, float fontSize) -> ImFont*;
+
+// gradient background
+void checkShaderCompileErrors(GLuint shader, const std::string& type);
+void checkProgramLinkErrors(GLuint program);
+void generateGradientTexture(int width, int height);
+auto compileShader(GLenum type, const char* source) -> GLuint;
+auto createShaderProgram(const char* vertexSource, const char* fragmentSource) -> GLuint;
+void setupFullScreenQuad();
 
 bool initializeOpenGL(HWND hwnd);
 void setupImGui(HWND hwnd);
