@@ -12,6 +12,7 @@
 
 #include "chat/chat_manager.hpp"
 #include "model/preset_manager.hpp"
+#include "model/model_manager.hpp"
 
 #include "nfd.h"
 
@@ -21,6 +22,7 @@
 #include <imgui.h>
 #include <imgui_impl_win32.h>
 #include <imgui_impl_opengl3.h>
+#include <curl/curl.h>
 
 class ScopedCleanup
 {
@@ -109,7 +111,7 @@ void InitializeImGui(Window& window)
     ImGui::StyleColorsDark();
 
     // Initialize font manager
-    FontsManager::GetInstance().LoadFonts(imguiIO);
+    FontsManager::GetInstance();
 
     ImGui_ImplWin32_Init(window.getNativeHandle());
     ImGui_ImplOpenGL3_Init("#version 330");
@@ -122,7 +124,7 @@ void InitializeGradientBackground(int display_w, int display_h)
     GradientBackground::setupFullScreenQuad();
 }
 
-void renderPlayground(float chatHistorySidebarWidth, float modelPresetSidebarWidth)
+void renderPlayground(float& chatHistorySidebarWidth, float& modelPresetSidebarWidth)
 {
     renderChatHistorySidebar(chatHistorySidebarWidth);
     renderModelPresetSidebar(modelPresetSidebarWidth);
@@ -172,9 +174,10 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE hPrevInstance, LPSTR lpCmdLine
         // Initialize ImGui
         InitializeImGui(*window);
 
-        // Initialize the chat manager and preset manager
+        // Initialize the chat manager, preset manager, and model manager
         Chat::initializeChatManager();
         Model::initializePresetManager();
+        Model::initializeModelManager();
 
         // Initialize NFD (Native File Dialog)
         NFD_Init();

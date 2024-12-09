@@ -115,13 +115,14 @@ void titleBar(void* handler)
 
             // Render minimize icon
             {
+                const char* icon = ICON_CI_CHROME_MINIMIZE;
                 ImVec2 iconPos = ImGui::GetItemRectMin();
-                iconPos.x += ((buttonWidth - ImGui::CalcTextSize(ICON_FA_WINDOW_MINIMIZE).x) / 2.0f) - 2.5;
-                iconPos.y += ((buttonHeight - ImGui::CalcTextSize(ICON_FA_WINDOW_MINIMIZE).y) / 2.0f) - 5;
+                iconPos.x += ((buttonWidth - ImGui::CalcTextSize(icon).x) / 2.0f) - 4;
+                iconPos.y += (buttonHeight - ImGui::CalcTextSize(icon).y) / 2.0f;
 
                 // Select icon font
-                ImGui::PushFont(FontsManager::GetInstance().GetIconFont(FontsManager::REGULAR));
-                draw_list->AddText(iconPos, IM_COL32(255, 255, 255, 255), ICON_FA_WINDOW_MINIMIZE);
+                ImGui::PushFont(FontsManager::GetInstance().GetIconFont());
+                draw_list->AddText(iconPos, IM_COL32(255, 255, 255, 255), icon);
                 ImGui::PopFont();
             }
 
@@ -155,13 +156,13 @@ void titleBar(void* handler)
 
             // Render maximize or restore icon
             {
-                const char* icon = IsZoomed(hwnd) ? ICON_FA_WINDOW_RESTORE : ICON_FA_WINDOW_MAXIMIZE;
+                const char* icon = IsZoomed(hwnd) ? ICON_CI_CHROME_RESTORE : ICON_CI_CHROME_MAXIMIZE;
                 ImVec2 iconPos = ImGui::GetItemRectMin();
-                iconPos.x += ((buttonWidth - ImGui::CalcTextSize(icon).x) / 2.0f) - 2.5;
+                iconPos.x += ((buttonWidth - ImGui::CalcTextSize(icon).x) / 2.0f) - 4;
                 iconPos.y += (buttonHeight - ImGui::CalcTextSize(icon).y) / 2.0f;
 
                 // Select icon font
-                ImGui::PushFont(FontsManager::GetInstance().GetIconFont(FontsManager::REGULAR));
+                ImGui::PushFont(FontsManager::GetInstance().GetIconFont());
                 draw_list->AddText(iconPos, IM_COL32(255, 255, 255, 255), icon);
                 ImGui::PopFont();
             }
@@ -192,25 +193,15 @@ void titleBar(void* handler)
 
             // Render close icon
             {
-                ImVec2 p_min = ImGui::GetItemRectMin();
-                ImVec2 p_max = ImGui::GetItemRectMax();
-                float padding = 18.0F;
-                ImU32 symbol_color = IM_COL32(255, 255, 255, 255);
-                float thickness = 1.0f;
+                const char* icon = ICON_CI_CHROME_CLOSE;
+                ImVec2 iconPos = ImGui::GetItemRectMin();
+                iconPos.x += ((buttonWidth - ImGui::CalcTextSize(icon).x) / 2.0f) - 4;
+                iconPos.y += (buttonHeight - ImGui::CalcTextSize(icon).y) / 2.0f;
 
-                draw_list->AddLine(
-                    ImVec2(p_min.x + padding - 2, p_min.y + padding + 1),
-                    ImVec2(p_max.x - padding + 2, p_max.y - padding),
-                    symbol_color,
-                    thickness
-                );
-
-                draw_list->AddLine(
-                    ImVec2(p_max.x - padding + 2, p_min.y + padding),
-                    ImVec2(p_min.x + padding - 2, p_max.y - padding - 1),
-                    symbol_color,
-                    thickness
-                );
+                // Select icon font
+                ImGui::PushFont(FontsManager::GetInstance().GetIconFont());
+                draw_list->AddText(iconPos, IM_COL32(255, 255, 255, 255), icon);
+                ImGui::PopFont();
             }
 
             ImGui::PopID();

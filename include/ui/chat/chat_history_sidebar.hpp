@@ -19,7 +19,7 @@ inline void renderChatHistoryList(ImVec2 contentArea)
         ButtonConfig chatButtonConfig;
         chatButtonConfig.id = "##chat" + std::to_string(chat.id);
         chatButtonConfig.label = chat.name;
-        chatButtonConfig.icon = ICON_FA_COMMENT;
+        chatButtonConfig.icon = ICON_CI_COMMENT;
         chatButtonConfig.size = ImVec2(contentArea.x - 20, 0);
         chatButtonConfig.gap = 10.0F;
         chatButtonConfig.onClick = [chatName = chat.name]() {
@@ -36,8 +36,9 @@ inline void renderChatHistoryList(ImVec2 contentArea)
         // Add tooltip showing last modified time
         if (ImGui::IsItemHovered()) {
             std::time_t time = static_cast<std::time_t>(chat.lastModified);
-            std::string timeStr = std::ctime(&time);
-            ImGui::SetTooltip("Last modified: %s", timeStr.c_str());
+            char timeStr[26];
+            ctime_s(timeStr, sizeof(timeStr), &time);
+            ImGui::SetTooltip("Last modified: %s", timeStr);
         }
 
         Button::render(chatButtonConfig);
@@ -74,7 +75,7 @@ inline void renderChatHistorySidebar(float& sidebarWidth)
     labelConfig.label = "Recents";
     labelConfig.size = ImVec2(Config::Icon::DEFAULT_FONT_SIZE, 0);
     labelConfig.iconPaddingX = 10.0F;
-    labelConfig.isBold = true;
+	labelConfig.fontType = FontsManager::BOLD;
     Label::render(labelConfig);
 
     // Calculate label height
@@ -89,7 +90,7 @@ inline void renderChatHistorySidebar(float& sidebarWidth)
 
     ButtonConfig createNewChatButtonConfig;
     createNewChatButtonConfig.id = "##createNewChat";
-    createNewChatButtonConfig.icon = ICON_FA_PEN_TO_SQUARE;
+    createNewChatButtonConfig.icon = ICON_CI_ADD;
     createNewChatButtonConfig.size = ImVec2(buttonHeight, 24);
     createNewChatButtonConfig.onClick = []() {
         Chat::ChatManager::getInstance().createNewChat(
