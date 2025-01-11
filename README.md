@@ -18,7 +18,7 @@
 
 3. **Wide Model Compatibility**  
    - Supports popular models like **Mistral**, **LLaMA**, **Qwen**, and many more  
-   - Powered by the [Genta Personal Engine](https://github.com/ggerganov/llama.cpp) built on top of [Llama.cpp](https://github.com/ggerganov/llama.cpp)
+   - Powered by the [Genta Personal Engine](https://genta.tech) built on top of [Llama.cpp](https://github.com/ggerganov/llama.cpp)
 
 4. **Easy Dataset Generation & Training**  
    - Build custom datasets with minimal overhead  
