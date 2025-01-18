@@ -133,7 +133,7 @@ KolosalAI/
 1. **Clone the repository**:
 
    ```bash
-   git clone https://github.com/<your_username_or_org>/KolosalAI.git
+   git clone https://github.com/Genta-Technology/Kolosal.git
    cd KolosalAI
    ```
 
