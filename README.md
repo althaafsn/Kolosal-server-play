@@ -37,7 +37,7 @@
 
 ### License Notice
 
-Although the Kolosal AI is entirely Open-Source, and can be distributed for free or commercial purposes under Apache 2.0 License, the main engine (the Genta Inference Engine Personal) can not be distributed for commercial purposes. For those who are planning to use Kolosal AI for commercial purpose, must contact our team at [rifky@genta.tech](mailto:rifky@genta.tech), or you can implement your own or other inference engine on Kolosal AI. This is intended to motivate contribution by companies to the Kolosal AI community by integrating other engine.
+Although the Kolosal AI is entirely Open-Source, and can be distributed for free or commercial purposes under Apache 2.0 License, the main engine (the Genta Inference Engine Personal) can not be distributed for commercial purposes. For those who are planning to use Kolosal AI for commercial purpose, must contact our team at [rifky@genta.tech](mailto:rifky@genta.tech), or you can implement your own or other inference engine on Kolosal AI, **or by being a contributor to Kolosal AI**. This is intended to motivate contribution by companies to the Kolosal AI community by integrating other engine.
 
 [Genta Inference Engine Personal](https://github.com/Genta-Technology/Kolosal/tree/main/external/genta-personal) © 2025 by [Rifky Bujana Bisri](https://linkedin.com/in/rifkybujana) is licensed under [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/). To view a copy of this license, visit https://creativecommons.org/licenses/by-nc-sa/4.0/
 
