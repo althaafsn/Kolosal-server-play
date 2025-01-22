@@ -43,6 +43,20 @@ Although the Kolosal AI is entirely Open-Source, and can be distributed for free
 
 ---
 
+## Credits & Attribution
+
+Kolosal AI uses or references the following third-party projects, each licensed under their respective terms:
+
+- [Dear ImGui](https://github.com/ocornut/imgui) (MIT License)  
+- [llama.cpp](https://github.com/ggerganov/llama.cpp) (MIT License)  
+- [nativefiledialog-extended](https://github.com/btzy/nativefiledialog-extended) (zlib License)  
+- [nlohmann/json](https://github.com/nlohmann/json) (MIT License)  
+- [stb libraries](https://github.com/nothings/stb) (Public Domain or MIT License)  
+
+These projects are distributed under their own licenses, separate from Kolosal AI. We are not affiliated with nor endorsed by the above entities.
+
+---
+
 ## About Genta Technology
 
 We are a small team of students passionate about addressing key concerns in AI such as **energy**, **privacy**, **on-premise**, and **on-edge** computing. Our flagship product is the **Genta Inference Engine**, which allows enterprises to deploy open-source models on their own servers, with **3-4x higher throughput**. This can reduce operational costs by up to **80%**, as a single server optimized by our engine can handle the workload of four standard servers.
