@@ -677,7 +677,7 @@ inline void renderInputField(const float inputHeight, const float inputWidth)
         // TODO: Implement assistant response through callback
         {
 			Model::PresetManager& presetManager = Model::PresetManager::getInstance();
-			Model::ModelManager& modelManager = Model::ModelManager::getInstance();
+			Model::ModelManager&  modelManager  = Model::ModelManager::getInstance();
 
 			// Prepare completion parameters
             ChatCompletionParameters completionParams;
@@ -693,19 +693,23 @@ inline void renderInputField(const float inputHeight, const float inputWidth)
                 completionParams.messages.push_back({ "user", input.c_str()});
 
 				// set the preset parameters
-                completionParams.randomSeed     = presetManager.getCurrentPreset().value().get().random_seed;
-                completionParams.maxNewTokens   = static_cast<int>(presetManager.getCurrentPreset().value().get().max_new_tokens);
-                completionParams.minLength      = static_cast<int>(presetManager.getCurrentPreset().value().get().min_length);
-                completionParams.temperature    = presetManager.getCurrentPreset().value().get().temperature;
-                completionParams.topP           = presetManager.getCurrentPreset().value().get().top_p;
+                completionParams.randomSeed         = presetManager.getCurrentPreset().value().get().random_seed;
+                completionParams.maxNewTokens       = static_cast<int>(presetManager.getCurrentPreset().value().get().max_new_tokens);
+                completionParams.minLength          = static_cast<int>(presetManager.getCurrentPreset().value().get().min_length);
+                completionParams.temperature        = presetManager.getCurrentPreset().value().get().temperature;
+                completionParams.topP               = presetManager.getCurrentPreset().value().get().top_p;
 				// TODO: add top_k to the completion parameters
-				// completionParams.topK        = presetManager.getCurrentPreset().value().get().top_k;
-                completionParams.streaming      = true;
+				// completionParams.topK            = presetManager.getCurrentPreset().value().get().top_k;
+                completionParams.streaming          = true;
+				completionParams.kvCacheFilePath    = chatManager.getCurrentKvChatPath().value().string();
             }
             int jobId = modelManager.startChatCompletionJob(completionParams);
 
 			// track the job ID in the chat manager
-			chatManager.setCurrentJobId(jobId);
+            if (!chatManager.setCurrentJobId(jobId))
+            {
+				std::cerr << "[ChatSection] Failed to set the current job ID.\n";
+            }
         }
     };
 

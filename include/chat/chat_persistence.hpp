@@ -20,7 +20,10 @@ namespace Chat
         virtual ~IChatPersistence() = default;
         virtual std::future<bool> saveChat(const ChatHistory& chat) = 0;
         virtual std::future<bool> deleteChat(const std::string& chatName) = 0;
+		virtual std::future<bool> deleteKvChat(const std::string& chatName) = 0;
         virtual std::future<std::vector<ChatHistory>> loadAllChats() = 0;
+		virtual std::filesystem::path getChatPath(const std::string& chatName) const = 0;
+		virtual std::filesystem::path getKvChatPath(const std::string& chatName) const = 0;
     };
 
     /**
@@ -29,7 +32,7 @@ namespace Chat
     class FileChatPersistence : public IChatPersistence 
     {
     public:
-        explicit FileChatPersistence(std::string basePath, std::array<uint8_t, 32> key)
+        explicit FileChatPersistence(std::filesystem::path basePath, std::array<uint8_t, 32> key)
             : m_basePath(std::move(basePath)), m_key(key) 
         {
 			// Create base path if it doesn't exist
@@ -56,12 +59,30 @@ namespace Chat
                     std::filesystem::remove(getChatPath(chatName));
                     return true;
                 }
-                catch (...) 
+                catch (const std::exception& e)
                 {
+                    std::cerr << "[FileChatPersistence] Failed to delete chat: " << chatName << "\n";
                     return false;
                 }
                 });
         }
+
+		std::future<bool> deleteKvChat(const std::string& chatName) override
+		{
+			return std::async(std::launch::async, [this, chatName]() {
+				std::unique_lock<std::shared_mutex> lock(m_ioMutex);
+				try
+				{
+					std::filesystem::remove(getKvChatPath(chatName));
+					return true;
+				}
+				catch (const std::exception& e)
+				{
+					std::cerr << "[FileChatPersistence] Failed to delete chat: " << chatName << "\n";
+					return false;
+				}
+				});
+		}
 
         std::future<std::vector<ChatHistory>> loadAllChats() override 
         {
@@ -71,15 +92,22 @@ namespace Chat
                 });
         }
 
-    private:
-        const std::string m_basePath;
-        const std::array<uint8_t, 32> m_key;
-        mutable std::shared_mutex m_ioMutex;
-
-        auto getChatPath(const std::string& chatName) const -> std::string 
+        std::filesystem::path getChatPath(const std::string& chatName) const override
         {
-            return (std::filesystem::path(m_basePath) / (chatName + ".chat")).string();
+            return std::filesystem::absolute(
+                std::filesystem::path(m_basePath) / (chatName + ".chat"));
         }
+
+        std::filesystem::path getKvChatPath(const std::string& chatName) const override
+		{
+			return std::filesystem::absolute(
+				std::filesystem::path(m_basePath) / (chatName + ".bin"));
+		}
+
+    private:
+        const   std::filesystem::path   m_basePath;
+        const   std::array<uint8_t, 32> m_key;
+        mutable std::shared_mutex       m_ioMutex;
 
         bool saveEncryptedChat(const ChatHistory& chat) 
         {
@@ -96,7 +124,7 @@ namespace Chat
                 auto encrypted = Crypto::encrypt(plaintext, m_key);
 
                 // Save to file
-				std::string chatPath = getChatPath(chat.name);
+				std::filesystem::path chatPath = getChatPath(chat.name);
                 std::ofstream file(chatPath, std::ios::binary);
                 if (!file) {
                     return false;
