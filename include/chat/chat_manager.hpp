@@ -21,6 +21,8 @@
 
 namespace Chat
 {
+    static std::unordered_map<std::string, bool> gThinkToggleMap;
+
     /**
      * @brief Singleton ChatManager class with thread-safe operations
      */
@@ -82,6 +84,8 @@ namespace Chat
             m_currentChatName = name;
             m_currentChatIndex = it->second;
 
+            gThinkToggleMap.clear();
+
             return true;
         }
 
@@ -135,6 +139,8 @@ namespace Chat
 
 		std::future<bool> clearCurrentChat()
 		{
+            gThinkToggleMap.clear();
+
 			return std::async(std::launch::async, [this]() {
 				std::unique_lock<std::shared_mutex> lock(m_mutex);
 				if (!m_currentChatName || m_currentChatIndex >= m_chats.size())
@@ -475,14 +481,15 @@ namespace Chat
 			return m_persistence->getChatPath(m_chats[m_currentChatIndex].name);
 		}
 
-		auto getCurrentKvChatPath() const -> std::optional<std::filesystem::path>
+		auto getCurrentKvChatPath(std::string modelName, std::string modelVariant) const -> std::optional<std::filesystem::path>
 		{
 			std::shared_lock<std::shared_mutex> lock(m_mutex);
 			if (!m_currentChatName || m_currentChatIndex >= m_chats.size())
 			{
 				return std::nullopt;
 			}
-			return m_persistence->getKvChatPath(m_chats[m_currentChatIndex].name);
+
+			return m_persistence->getKvChatPath(m_chats[m_currentChatIndex].name + modelName + modelVariant);
 		}
 
 		static const std::string getDefaultChatName() { return DEFAULT_CHAT_NAME; }

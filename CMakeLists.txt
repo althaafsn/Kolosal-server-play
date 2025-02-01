@@ -68,6 +68,13 @@ message(STATUS "Found InferenceEngine libraries:")
 message(STATUS "  - OpenBLAS: ${INFERENCE_ENGINE_LIB}")
 message(STATUS "  - Vulkan:   ${INFERENCE_ENGINE_LIB_VULKAN}")
 
+# MD4C, ImGuiTextEdit and imgui_md
+set(MARKDOWN_RENDERER
+    ${EXTERNAL_DIR}/md4c/src/md4c.c
+    ${EXTERNAL_DIR}/ImGuiColorTextEdit/TextEditor.cpp
+    ${EXTERNAL_DIR}/imgui_md/imgui_md.cpp
+)
+
 # ==== ImGui Configuration ====
 set(IMGUI_SOURCES
     ${IMGUI_DIR}/imgui.cpp
@@ -92,6 +99,7 @@ set(FONT_DEFINITIONS
 # ==== Kolosal Library ====
 add_library(kolosal_lib STATIC
     ${IMGUI_SOURCES}
+    ${MARKDOWN_RENDERER}
 )
 
 # Set definitions
@@ -112,6 +120,9 @@ target_include_directories(kolosal_lib PUBLIC
     ${EXTERNAL_DIR}/nativefiledialog-extended/src/include
     ${EXTERNAL_DIR}/genta-personal/include
     ${EXTERNAL_DIR}/stb
+    ${EXTERNAL_DIR}/md4c/src
+    ${EXTERNAL_DIR}/ImGuiColorTextEdit
+    ${EXTERNAL_DIR}/imgui_md
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/assets
     ${CURL_INCLUDE_DIR}
@@ -167,18 +178,6 @@ else()
         assets/resource.rc
     )
 endif()
-
-target_include_directories(KolosalDesktop PRIVATE
-    ${IMGUI_DIR}
-    ${IMGUI_DIR}/backends
-    ${OpenGL_INCLUDE_DIR}
-    ${EXTERNAL_DIR}/glad/include
-    ${EXTERNAL_DIR}/icons
-    ${EXTERNAL_DIR}/nlohmann
-    ${EXTERNAL_DIR}/nativefiledialog-extended/src/include
-    ${EXTERNAL_DIR}/genta-personal/include
-    ${CMAKE_SOURCE_DIR}/include
-)
 
 target_link_libraries(KolosalDesktop PRIVATE kolosal_lib)
 

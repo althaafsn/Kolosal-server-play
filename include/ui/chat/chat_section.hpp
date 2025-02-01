@@ -3,6 +3,7 @@
 #include "imgui.h"
 #include "config.hpp"
 #include "ui/widgets.hpp"
+#include "ui/markdown.hpp"
 #include "chat/chat_manager.hpp"
 #include "model/preset_manager.hpp"
 #include "model/model_manager.hpp"
@@ -10,32 +11,55 @@
 #include <iostream>
 #include <inference.h>
 
-inline void pushIDAndColors(const Chat::Message msg, int index)
+inline auto parseThinkSegments(const std::string& content) -> std::vector<std::pair<bool, std::string>>
 {
-    ImGui::PushID(index);
+    std::vector<std::pair<bool, std::string>> segments;
+    size_t current_pos = 0;
+    const std::string open_tag = "<think>";
+    const std::string close_tag = "</think>";
 
-    // Set background color to #2f2f2f for user
-    ImVec4 bgColor = ImVec4(
-        Config::UserColor::COMPONENT,
-        Config::UserColor::COMPONENT,
-        Config::UserColor::COMPONENT,
-        1.0F);
-
-    // Set background color to transparent for assistant
-    if (msg.role == "assistant")
-    {
-        bgColor = ImVec4(0.0F, 0.0F, 0.0F, 0.0F);
+    while (current_pos < content.size()) {
+        size_t think_start = content.find(open_tag, current_pos);
+        if (think_start == std::string::npos) {
+            // Add remaining text as a normal segment
+            std::string normal = content.substr(current_pos);
+            if (!normal.empty()) {
+                segments.emplace_back(false, normal);
+            }
+            break;
+        }
+        else {
+            // Add text before <think> as a normal segment
+            std::string normal_part = content.substr(current_pos, think_start - current_pos);
+            if (!normal_part.empty()) {
+                segments.emplace_back(false, normal_part);
+            }
+            // Process the think content
+            size_t content_start = think_start + open_tag.size();
+            size_t think_end = content.find(close_tag, content_start);
+            if (think_end == std::string::npos) {
+                // No closing tag; take the rest as think content
+                std::string think_part = content.substr(content_start);
+                segments.emplace_back(true, think_part);
+                current_pos = content.size();
+            }
+            else {
+                // Extract think content and move past the closing tag
+                std::string think_part = content.substr(content_start, think_end - content_start);
+                segments.emplace_back(true, think_part);
+                current_pos = think_end + close_tag.size();
+            }
+        }
     }
 
-    ImGui::PushStyleColor(ImGuiCol_ChildBg, bgColor);
-    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0F, 1.0F, 1.0F, 1.0F)); // White text
+    return segments;
 }
 
 inline auto calculateDimensions(const Chat::Message msg, float windowWidth) -> std::tuple<float, float, float>
 {
     float bubbleWidth = windowWidth * Config::Bubble::WIDTH_RATIO;
     float bubblePadding = Config::Bubble::PADDING;
-    float paddingX = windowWidth - bubbleWidth - Config::Bubble::RIGHT_PADDING;
+    float paddingX = windowWidth - bubbleWidth;
 
     if (msg.role == "assistant")
     {
@@ -48,11 +72,117 @@ inline auto calculateDimensions(const Chat::Message msg, float windowWidth) -> s
 
 inline void renderMessageContent(const Chat::Message msg, float bubbleWidth, float bubblePadding)
 {
-    ImGui::SetCursorPosX(bubblePadding);
-    ImGui::SetCursorPosY(bubblePadding);
-    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + bubbleWidth - (bubblePadding * 2));
-    ImGui::TextWrapped("%s", msg.content.c_str());
-    ImGui::PopTextWrapPos();
+    if (msg.role == "user")
+    {
+        ImGui::SetCursorPosX(bubblePadding);
+        ImGui::SetCursorPosY(bubblePadding);
+        ImGui::TextWrapped("%s", msg.content.c_str());
+    }
+    else
+    {
+        ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 24);
+        ImGui::BeginGroup();
+
+        // Parse and render segments
+        auto segments = parseThinkSegments(msg.content);
+        for (int i = 0; i < segments.size(); i++) {
+            bool isThink = segments[i].first;
+            const std::string& text = segments[i].second;
+
+            // Skip rendering if this is a "think" segment with no (or only whitespace) text.
+            if (isThink && text.find_first_not_of(" \t\n") == std::string::npos) {
+                continue;
+            }
+
+            if (isThink)
+            {
+                const std::string uniqueID =
+                    msg.id + "_thinkSegment_" + std::to_string(i);
+
+                if (!Chat::gThinkToggleMap.count(uniqueID))
+                {
+                    Chat::gThinkToggleMap[uniqueID] = true;
+                }
+
+                // Grab the current toggle state
+                bool& showThink = Chat::gThinkToggleMap[uniqueID];
+
+                // Some vertical spacing before the "think" segment
+                ImGui::NewLine();
+
+                // Give the toggle button a unique label or ID
+				ButtonConfig thinkButtonConfig;
+				thinkButtonConfig.id = "##" + uniqueID;
+				thinkButtonConfig.icon = showThink ? ICON_CI_CHEVRON_DOWN : ICON_CI_CHEVRON_RIGHT;
+				thinkButtonConfig.label = "Thoughts";
+				thinkButtonConfig.size = ImVec2(100, 0);
+				thinkButtonConfig.alignment = Alignment::LEFT;
+				thinkButtonConfig.backgroundColor = ImVec4(0.2F, 0.2F, 0.2F, 0.4F);
+				thinkButtonConfig.textColor = ImVec4(0.9F, 0.9F, 0.9F, 0.9F);
+				thinkButtonConfig.onClick = [&showThink]() {
+					showThink = !showThink;
+					};
+				Button::render(thinkButtonConfig);
+
+                if (showThink)
+                {
+                    // Measure text size so we know how tall the line should be
+                    float availableWidth = bubbleWidth - 2.0f * bubblePadding;
+                    ImVec2 textSize = ImGui::CalcTextSize(text.c_str(), nullptr, false, availableWidth);
+
+                    // We’ll add some extra padding to the top/bottom around the text
+                    float segmentHeight = textSize.y + bubblePadding * 2.0f;
+
+                    // Store the current screen position (top-left) for line drawing
+                    ImVec2 startPos = ImGui::GetCursorScreenPos();
+                    startPos.y += 12;
+
+                    // Draw the vertical line
+                    ImDrawList* drawList = ImGui::GetWindowDrawList();
+                    float lineThickness = 1.0f;                  // thickness of the line
+                    float linePadding = 8.0f;                  // space between line and text
+                    ImU32 lineColor = IM_COL32(153, 153, 153, 153); // grey color
+
+                    drawList->AddLine(
+                        ImVec2(startPos.x, startPos.y),
+                        ImVec2(startPos.x, startPos.y + segmentHeight),
+                        lineColor,
+                        lineThickness
+                    );
+
+                    // Move cursor to the right of the line + padding
+                    // so that the text lines up neatly
+                    ImGui::SetCursorPosX(ImGui::GetCursorPosX() + lineThickness + linePadding);
+
+                    // Enable wrapping at the remaining available width
+                    float wrapWidth = availableWidth - (lineThickness + linePadding);
+                    ImGui::PushTextWrapPos(ImGui::GetCursorPos().x + wrapWidth);
+
+                    // Render the "think" text in grey
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7f, 0.7f, 0.7f, 0.7f));
+                    ImGui::TextUnformatted(text.c_str());
+                    ImGui::PopStyleColor();
+
+                    ImGui::PopTextWrapPos();
+
+                    // Move the cursor to the bottom of this "think" segment
+                    // so subsequent items appear below
+                    ImGui::SetCursorScreenPos(ImVec2(startPos.x, startPos.y + segmentHeight));
+
+                    // A bit of spacing after the block
+                    ImGui::Dummy(ImVec2(0, 5.0f));
+                }
+            }
+            else
+            {
+                // Normal markdown content (unchanged)
+                RenderMarkdown(text.c_str());
+            }
+
+        }
+
+        ImGui::EndGroup();
+    }
 }
 
 inline void renderTimestamp(const Chat::Message msg, float bubblePadding)
@@ -60,30 +190,24 @@ inline void renderTimestamp(const Chat::Message msg, float bubblePadding)
     // Set timestamp color to a lighter gray
     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7F, 0.7F, 0.7F, 1.0F)); // Light gray for timestamp
 
-	float timestampPosY = ImGui::GetWindowHeight() - ImGui::GetTextLineHeightWithSpacing()
-                          - (bubblePadding - Config::Timing::TIMESTAMP_OFFSET_Y);
-
-	if (msg.role == "assistant")
-	{
-		timestampPosY += 5;
-	}
-
-	ImGui::SetCursorPosY(timestampPosY);
-    ImGui::SetCursorPosX(bubblePadding); // Align timestamp to the left
     ImGui::TextWrapped("%s", timePointToString(msg.timestamp).c_str());
 
     ImGui::PopStyleColor(); // Restore original text color
 }
 
+inline void renderTps(const Chat::Message msg, float bubblePadding)
+{
+	// Set timestamp color to a lighter gray
+	ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.7F, 0.7F, 0.7F, 1.0F)); // Light gray for timestamp
+	ImGui::TextWrapped("TPS: %.2f", msg.tps);
+	ImGui::PopStyleColor(); // Restore original text color
+}
+
 inline void renderButtons(const Chat::Message msg, int index, float bubbleWidth, float bubblePadding)
 {
-    ImVec2 textSize = ImGui::CalcTextSize(msg.content.c_str(), nullptr, true, bubbleWidth - bubblePadding * 2);
-    float buttonPosY = textSize.y + bubblePadding;
-
-	if (msg.role == "assistant")
-	{
-		buttonPosY += 10;
-	}
+	ImGui::SetCursorPosX(
+		ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - Config::Button::WIDTH - bubblePadding
+    );
 
     ButtonConfig copyButtonConfig;
     copyButtonConfig.id = "##copy" + std::to_string(index);
@@ -96,53 +220,76 @@ inline void renderButtons(const Chat::Message msg, int index, float bubbleWidth,
 			const Chat::Message& msg = chatHistory.messages[index];
             ImGui::SetClipboardText(msg.content.c_str());
         };
-    std::vector<ButtonConfig> userButtons = { copyButtonConfig };
-
-    Button::renderGroup(
-        userButtons,
-        bubbleWidth - bubblePadding - Config::Button::WIDTH,
-        buttonPosY);
+	Button::render(copyButtonConfig);
 }
 
-inline void renderMessage(const Chat::Message &msg, int index, float contentWidth)
+inline void renderMessage(const Chat::Message& msg, int index, float contentWidth)
 {
-    pushIDAndColors(msg, index);
     float windowWidth = contentWidth;
     auto [bubbleWidth, bubblePadding, paddingX] = calculateDimensions(msg, windowWidth);
 
-    ImVec2 textSize = ImGui::CalcTextSize(msg.content.c_str(), nullptr, true, bubbleWidth - bubblePadding * 2);
-    float estimatedHeight = textSize.y + bubblePadding * 2 + ImGui::GetTextLineHeightWithSpacing();
+    ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, Config::InputField::CHILD_ROUNDING);
+    ImVec4 bgColor = ImVec4( // Default to user color
+        Config::UserColor::COMPONENT,
+        Config::UserColor::COMPONENT,
+        Config::UserColor::COMPONENT,
+        1.0F);
 
-    ImGui::SetCursorPosX(paddingX);
-
-    if (msg.role == "user")
+    if (msg.role == "assistant")
     {
-        ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, Config::InputField::CHILD_ROUNDING);
+        bgColor = ImVec4(0.0F, 0.0F, 0.0F, 0.0F); // Transparent for assistant
     }
 
-    ImGui::BeginGroup();
-    ImGui::BeginChild(
-        ("MessageCard" + std::to_string(index)).c_str(),
-        ImVec2(bubbleWidth, estimatedHeight),
-        false,
-        ImGuiWindowFlags_NoScrollbar);
+    ImGui::PushStyleColor(ImGuiCol_ChildBg, bgColor);
+    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0F, 1.0F, 1.0F, 1.0F));
 
-    renderMessageContent(msg, bubbleWidth, bubblePadding);
-    ImGui::Spacing();
-    renderTimestamp(msg, bubblePadding);
-    renderButtons(msg, index, bubbleWidth, bubblePadding);
-
-    ImGui::EndChild();
-    ImGui::EndGroup();
-
-    if (msg.role == "user")
+    // Add frame on user message
     {
-        ImGui::PopStyleVar();
+        if (msg.role == "user")
+        {
+            ImVec2 textSize = ImGui::CalcTextSize(msg.content.c_str(), nullptr, true, bubbleWidth - bubblePadding * 2);
+            float estimatedHeight = textSize.y + bubblePadding * 2 + ImGui::GetTextLineHeightWithSpacing() + 12;
+
+            // User message frame with background and border
+            ImGui::SetCursorPosX(paddingX);
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(bubblePadding, bubblePadding));
+            ImGui::BeginChild(("##UsrMessage" + std::to_string(msg.id)).c_str(),
+                ImVec2(bubbleWidth, estimatedHeight),
+                ImGuiChildFlags_Border | ImGuiChildFlags_AlwaysUseWindowPadding);
+            ImGui::PopStyleVar();
+
+            // Calculate content width accounting for padding
+            const float contentWidthInside = bubbleWidth - 2 * bubblePadding;
+            renderMessageContent(msg, contentWidthInside, bubblePadding);
+            ImGui::Spacing();
+
+            // Render timestamp and buttons
+            renderTimestamp(msg, 0);
+            ImGui::SameLine();
+            renderButtons(msg, index, contentWidthInside, 0);
+
+            ImGui::EndChild();
+        }
+        else
+        {
+            // Assistant message (existing layout)
+            ImGui::SetCursorPosX(paddingX);
+            renderMessageContent(msg, bubbleWidth, bubblePadding);
+            ImGui::Spacing();
+            renderTimestamp(msg, bubblePadding);
+            ImGui::SameLine();
+			// add some spacing between messages
+			ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 10);
+			renderTps(msg, bubblePadding);
+            ImGui::SameLine();
+            renderButtons(msg, index, bubbleWidth, bubblePadding);
+        }
     }
 
+    ImGui::PopStyleVar(); // ChildRounding
     ImGui::PopStyleColor(2);
-    ImGui::PopID();
-    ImGui::Spacing();
+
+    ImGui::Dummy(ImVec2(0, 20.0f)); // Add some spacing between messages
 }
 
 inline void renderChatHistory(const Chat::ChatHistory chatHistory, float contentWidth)
@@ -220,7 +367,57 @@ inline void renderRenameChatDialog(bool &showRenameChatDialog)
     ModalWindow::render(modalConfig);
 }
 
-inline void renderModelManager(bool &openModal)
+inline void renderDeleteModelModal(bool& openModal, int index, std::string variant)
+{
+    ModalConfig modalConfig
+    {
+        "Confirm Delete Model",
+        "Confirm Delete Model",
+        ImVec2(300, 96),
+        [&]()
+        {
+            // Render the buttons
+            std::vector<ButtonConfig> buttons;
+
+            ButtonConfig cancelButton;
+            cancelButton.id = "##cancelDeleteModel";
+            cancelButton.label = "Cancel";
+            cancelButton.backgroundColor = RGBAToImVec4(34, 34, 34, 255);
+            cancelButton.hoverColor = RGBAToImVec4(53, 132, 228, 255);
+            cancelButton.activeColor = RGBAToImVec4(26, 95, 180, 255);
+            cancelButton.textColor = RGBAToImVec4(255, 255, 255, 255);
+            cancelButton.size = ImVec2(130, 0);
+            cancelButton.onClick = []()
+                {
+                    ImGui::CloseCurrentPopup();
+                };
+
+            buttons.push_back(cancelButton);
+
+            ButtonConfig confirmButton;
+            confirmButton.id = "##confirmDeleteModel";
+            confirmButton.label = "Confirm";
+            confirmButton.backgroundColor = RGBAToImVec4(26, 95, 180, 255);
+            confirmButton.hoverColor = RGBAToImVec4(53, 132, 228, 255);
+            confirmButton.activeColor = RGBAToImVec4(26, 95, 180, 255);
+            confirmButton.size = ImVec2(130, 0);
+            confirmButton.onClick = [index, variant]()
+                {
+                    Model::ModelManager::getInstance().deleteDownloadedModel(index, variant);
+                    ImGui::CloseCurrentPopup();
+                };
+
+            buttons.push_back(confirmButton);
+
+            Button::renderGroup(buttons, 16, ImGui::GetCursorPosY() + 8);
+        },
+        openModal
+    };
+    modalConfig.padding = ImVec2(16.0F, 8.0F);
+    ModalWindow::render(modalConfig);
+}
+
+inline void renderModelManager(bool& openModal)
 {
     ImVec2 windowSize = ImGui::GetWindowSize();
     const float targetWidth = windowSize.x;
@@ -230,7 +427,7 @@ inline void renderModelManager(bool &openModal)
     const float cardHeight = 220;
     const float cardSpacing = 10.0f;
     const float cardUnit = cardWidth + cardSpacing;
-    const float paddingTotal = 2 * 16.0F; // 16.0F is the default padding value defined in the ModalWindow::render function
+    const float paddingTotal = 2 * 16.0F; // 16.0F is the default padding value
 
     // Calculate number of cards that fit within target width
     float availableWidth = targetWidth - paddingTotal;
@@ -238,8 +435,6 @@ inline void renderModelManager(bool &openModal)
 
     // Calculate actual modal width
     float modalWidth = (numCards * cardUnit) + paddingTotal;
-
-    // If we're too far below target width, add one more card
     if (targetWidth - modalWidth > cardUnit * 0.5f)
     {
         numCards++;
@@ -255,24 +450,13 @@ inline void renderModelManager(bool &openModal)
         [numCards, cardSpacing, cardWidth, cardHeight, targetWidth]()
         {
             std::vector<Model::ModelData> models = Model::ModelManager::getInstance().getModels();
-            static std::vector<std::string> modelVariants;
-            if (modelVariants.empty())
-            {
-                for (int8_t i = 0; i < models.size(); i++)
-                {
-                    if (models[i].name == Model::ModelManager::getInstance().getCurrentModelName())
-                    {
-                        modelVariants.push_back(Model::ModelManager::getInstance().getCurrentVariantType());
-                        continue;
-                    }
-
-					// Default to 8-bit quantized
-                    modelVariants.push_back("8-bit Quantized");
-                }
-            }
 
             for (size_t i = 0; i < models.size(); i++)
             {
+                // Get the current variant for THIS model directly from the manager
+                std::string currentVariant = Model::ModelManager::getInstance()
+                    .getCurrentVariantForModel(models[i].name);
+
                 // Start new row
                 if (i % numCards == 0)
                 {
@@ -296,7 +480,6 @@ inline void renderModelManager(bool &openModal)
                 modelAuthorLabel.fontSize = FontsManager::SM;
                 Label::render(modelAuthorLabel);
 
-                // Get the height of the author label
                 float authorLabelHeight = ImGui::GetTextLineHeightWithSpacing();
 
                 // Render model name label
@@ -308,129 +491,120 @@ inline void renderModelManager(bool &openModal)
                 modelNameLabel.alignment = Alignment::LEFT;
                 Label::render(modelNameLabel);
 
-                // Get the height of the model name label
                 float modelNameLabelHeight = ImGui::GetTextLineHeightWithSpacing();
-
-                // Calculate the total height of the labels
                 float totalLabelHeight = authorLabelHeight + modelNameLabelHeight;
 
-                // add left padding
+                // Add some padding.
                 ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 4.0f);
                 ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4.0f);
 
-				ButtonConfig fullPrecisionButton;
-				fullPrecisionButton.id = "##useFullPrecision" + std::to_string(i);
-				if (modelVariants[i] == "Full Precision")
-				{
-					fullPrecisionButton.icon = ICON_CI_CHECK;
-				}
-				else
-				{
-					// TODO's workarounds for the button size issue
-					fullPrecisionButton.icon = ICON_CI_CLOSE;
-					fullPrecisionButton.textColor = RGBAToImVec4(34, 34, 34, 255);
-				}
-				fullPrecisionButton.fontSize = FontsManager::SM;
-				fullPrecisionButton.size = ImVec2(24, 0);
-				fullPrecisionButton.backgroundColor = RGBAToImVec4(34, 34, 34, 255);
-				fullPrecisionButton.onClick = [i, models]()
-					{
-						modelVariants[i] = "Full Precision";
-					};
-				Button::render(fullPrecisionButton);
+                // ---------------- Variant Buttons ----------------
+                // Full Precision button:
+                ButtonConfig fullPrecisionButton;
+                fullPrecisionButton.id = "##useFullPrecision" + std::to_string(i);
+                if (currentVariant == "Full Precision")
+                {
+                    fullPrecisionButton.icon = ICON_CI_CHECK;
+                }
+                else
+                {
+                    fullPrecisionButton.icon = ICON_CI_CLOSE;
+                    fullPrecisionButton.textColor = RGBAToImVec4(34, 34, 34, 255);
+                }
+                fullPrecisionButton.fontSize = FontsManager::SM;
+                fullPrecisionButton.size = ImVec2(24, 0);
+                fullPrecisionButton.backgroundColor = RGBAToImVec4(34, 34, 34, 255);
+                fullPrecisionButton.onClick = [i, models, &currentVariant]()
+                {
+					currentVariant = "Full Precision";
+                    Model::ModelManager::getInstance().setPreferredVariant(models[i].name, "Full Precision");
+                };
+                Button::render(fullPrecisionButton);
 
-				// Get the height of the full precision checkbox button
-				float fullPrecisionHeight = ImGui::GetTextLineHeightWithSpacing();
+                float fullPrecisionHeight = ImGui::GetTextLineHeightWithSpacing();
+                ImGui::SameLine(0.0f, 4.0f);
 
-				ImGui::SameLine(0.0f, 4.0f);
+                // Full Precision label:
+                LabelConfig fullPrecisionLabel;
+                fullPrecisionLabel.id = "##fullprecision" + std::to_string(i);
+                fullPrecisionLabel.label = "Use Full Precision";
+                fullPrecisionLabel.size = ImVec2(0, 0);
+                fullPrecisionLabel.fontType = FontsManager::REGULAR;
+                fullPrecisionLabel.fontSize = FontsManager::SM;
+                fullPrecisionLabel.alignment = Alignment::LEFT;
+                float fullPrecisionLabelOffsetY = (fullPrecisionButton.size.y - ImGui::GetTextLineHeight()) / 4.0f + 2.0f;
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + fullPrecisionLabelOffsetY);
+                Label::render(fullPrecisionLabel);
 
-				// Render labels
-				LabelConfig fullPrecisionLabel;
-				fullPrecisionLabel.id = "##fullprecision" + std::to_string(i);
-				fullPrecisionLabel.label = "Use Full Precision";
-				fullPrecisionLabel.size = ImVec2(0, 0);
-				fullPrecisionLabel.fontType = FontsManager::REGULAR;
-				fullPrecisionLabel.fontSize = FontsManager::SM;
-				fullPrecisionLabel.alignment = Alignment::LEFT;
-				float fullPrecisionLabelOffsetY = (fullPrecisionButton.size.y - ImGui::GetTextLineHeight()) / 4.0f + 2.0f;
-				ImGui::SetCursorPosY(ImGui::GetCursorPosY() + fullPrecisionLabelOffsetY);
-				Label::render(fullPrecisionLabel);
-
+                // 8-bit Quantized button:
                 ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 4.0f);
                 ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4.0f);
 
-                // TODO: Check button rect size is bigger when no icon is present
-                //       make sure to adjust the size of the button accordingly     
-                
-				ButtonConfig use8bitButton;
-				use8bitButton.id = "##use8bit" + std::to_string(i);
-				if (modelVariants[i] == "8-bit Quantized")
-				{
-					use8bitButton.icon = ICON_CI_CHECK;
-				}
-				else
-				{
-					// TODO's workarounds for the button size issue
-					use8bitButton.icon = ICON_CI_CLOSE;
-					use8bitButton.textColor = RGBAToImVec4(34, 34, 34, 255);
-				}
-				use8bitButton.fontSize = FontsManager::SM;
-				use8bitButton.size = ImVec2(24, 0);
-				use8bitButton.backgroundColor = RGBAToImVec4(34, 34, 34, 255);
-				use8bitButton.onClick = [i, models]()
-					{
-						modelVariants[i] = "8-bit Quantized";
-					};
-				Button::render(use8bitButton);
+                ButtonConfig use8bitButton;
+                use8bitButton.id = "##use8bit" + std::to_string(i);
+                if (currentVariant == "8-bit Quantized")
+                {
+                    use8bitButton.icon = ICON_CI_CHECK;
+                }
+                else
+                {
+                    use8bitButton.icon = ICON_CI_CLOSE;
+                    use8bitButton.textColor = RGBAToImVec4(34, 34, 34, 255);
+                }
+                use8bitButton.fontSize = FontsManager::SM;
+                use8bitButton.size = ImVec2(24, 0);
+                use8bitButton.backgroundColor = RGBAToImVec4(34, 34, 34, 255);
+                use8bitButton.onClick = [i, models, &currentVariant]()
+                {
+					currentVariant = "8-bit Quantized";
+                    Model::ModelManager::getInstance().setPreferredVariant(models[i].name, "8-bit Quantized");
+                };
+                Button::render(use8bitButton);
 
-				// Get the height of the quantization checkbox button
-				float _8bitquantizationHeight = ImGui::GetTextLineHeightWithSpacing();
+                float _8bitquantizationHeight = ImGui::GetTextLineHeightWithSpacing();
+                ImGui::SameLine(0.0f, 4.0f);
 
-				ImGui::SameLine(0.0f, 4.0f);
+                // 8-bit Quantized label:
+                LabelConfig _8BitQuantizationLabel;
+                _8BitQuantizationLabel.id = "##8bitquantization" + std::to_string(i);
+                _8BitQuantizationLabel.label = "Use 8-bit quantization";
+                _8BitQuantizationLabel.size = ImVec2(0, 0);
+                _8BitQuantizationLabel.fontType = FontsManager::REGULAR;
+                _8BitQuantizationLabel.fontSize = FontsManager::SM;
+                _8BitQuantizationLabel.alignment = Alignment::LEFT;
+                float _8BitLabelOffsetY = (use8bitButton.size.y - ImGui::GetTextLineHeight()) / 4.0f + 2.0f;
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + _8BitLabelOffsetY);
+                Label::render(_8BitQuantizationLabel);
 
-				// Render labels
-				LabelConfig _8BitQuantizationLabel;
-				_8BitQuantizationLabel.id = "##8bitquantization" + std::to_string(i);
-				_8BitQuantizationLabel.label = "Use 8-bit quantization";
-				_8BitQuantizationLabel.size = ImVec2(0, 0);
-				_8BitQuantizationLabel.fontType = FontsManager::REGULAR;
-				_8BitQuantizationLabel.fontSize = FontsManager::SM;
-				_8BitQuantizationLabel.alignment = Alignment::LEFT;
-				float _8BitLabelOffsetY = (use8bitButton.size.y - ImGui::GetTextLineHeight()) / 4.0f + 2.0f;
-				ImGui::SetCursorPosY(ImGui::GetCursorPosY() + _8BitLabelOffsetY);
-				Label::render(_8BitQuantizationLabel);
-
-				// add left padding
-				ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 4.0f);
-				ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4.0f);
+                // 4-bit Quantized button:
+                ImGui::SetCursorPosX(ImGui::GetCursorPosX() + 4.0f);
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4.0f);
 
                 ButtonConfig use4bitButton;
                 use4bitButton.id = "##use4bit" + std::to_string(i);
-                if (modelVariants[i] == "4-bit Quantized")
+                if (currentVariant == "4-bit Quantized")
                 {
                     use4bitButton.icon = ICON_CI_CHECK;
                 }
                 else
                 {
-                    // TODO's workarounds for the button size issue
                     use4bitButton.icon = ICON_CI_CLOSE;
                     use4bitButton.textColor = RGBAToImVec4(34, 34, 34, 255);
                 }
                 use4bitButton.fontSize = FontsManager::SM;
                 use4bitButton.size = ImVec2(24, 0);
                 use4bitButton.backgroundColor = RGBAToImVec4(34, 34, 34, 255);
-                use4bitButton.onClick = [i, models]()
-                    {
-						modelVariants[i] = "4-bit Quantized";
-                    };
+                use4bitButton.onClick = [i, models, &currentVariant]()
+                {
+					currentVariant = "4-bit Quantized";
+                    Model::ModelManager::getInstance().setPreferredVariant(models[i].name, "4-bit Quantized");
+                };
                 Button::render(use4bitButton);
 
-                // Get the height of the quantization checkbox button
                 float _4BitQantizationHeight = ImGui::GetTextLineHeightWithSpacing();
-
                 ImGui::SameLine(0.0f, 4.0f);
 
-                // Render labels
+                // 4-bit Quantized label:
                 LabelConfig _4BitQuantizationLabel;
                 _4BitQuantizationLabel.id = "##quantization" + std::to_string(i);
                 _4BitQuantizationLabel.label = "Use 4-bit quantization";
@@ -441,13 +615,14 @@ inline void renderModelManager(bool &openModal)
                 float labelOffsetY = (use4bitButton.size.y - ImGui::GetTextLineHeight()) / 4.0f + 2.0f;
                 ImGui::SetCursorPosY(ImGui::GetCursorPosY() + labelOffsetY);
                 Label::render(_4BitQuantizationLabel);
+                // ----------------------------------------------------
 
-                // Render select button at the bottom of the card
-				ImGui::SetCursorPosY(cardHeight - 35);
+                // Render select/download button at the bottom.
+                ImGui::SetCursorPosY(cardHeight - 35);
 
                 bool isSelected = models[i].name == Model::ModelManager::getInstance().getCurrentModelName() &&
-                                  modelVariants[i] == Model::ModelManager::getInstance().getCurrentVariantType();
-                bool isDownloaded = Model::ModelManager::getInstance().isModelDownloaded(i, modelVariants[i]);
+                                  currentVariant == Model::ModelManager::getInstance().getCurrentVariantType();
+                bool isDownloaded = Model::ModelManager::getInstance().isModelDownloaded(i, currentVariant);
 
                 ButtonConfig selectButton;
                 selectButton.size = ImVec2(cardWidth - 18, 0);
@@ -461,23 +636,29 @@ inline void renderModelManager(bool &openModal)
                     selectButton.activeColor = RGBAToImVec4(26, 95, 180, 255);
                     selectButton.icon = ICON_CI_CLOUD_DOWNLOAD;
                     selectButton.borderSize = 1.0F;
-
                     selectButton.onClick = [i, models]()
                     {
-                        Model::ModelManager::getInstance().downloadModel(i, modelVariants[i]);
+                        // Commit the current variant before downloading.
+                        std::string variant = Model::ModelManager::getInstance().getCurrentVariantForModel(models[i].name);
+                        Model::ModelManager::getInstance().setPreferredVariant(models[i].name, variant);
+                        Model::ModelManager::getInstance().downloadModel(i, variant);
                     };
 
-                    if (Model::ModelManager::getInstance().getModelDownloadProgress(i, modelVariants[i]) > 0.0)
+                    if (Model::ModelManager::getInstance().getModelDownloadProgress(i, currentVariant) > 0.0)
                     {
-                        selectButton.label = "Downloading";
-                        selectButton.icon = ICON_CI_CLOUD_DOWNLOAD;
-                        selectButton.state = ButtonState::DISABLED;
-
+						selectButton.id = "##cancel" + std::to_string(i);
+                        selectButton.label = "Cancel";
+                        selectButton.backgroundColor = RGBAToImVec4(200, 50, 50, 255);
+                        selectButton.hoverColor = RGBAToImVec4(220, 70, 70, 255);
+                        selectButton.activeColor = RGBAToImVec4(200, 50, 50, 255);
+                        selectButton.icon = ICON_CI_CLOSE;
+                        selectButton.onClick = [i, currentVariant]()
+                            {
+                                Model::ModelManager::getInstance().cancelDownload(i, currentVariant);
+                            };
                         ImGui::SetCursorPosY(ImGui::GetCursorPosY() - _4BitQantizationHeight - 6);
-
-                        // Add a progress bar
                         ImGui::ProgressBar(
-                            Model::ModelManager::getInstance().getModelDownloadProgress(i, modelVariants[i]) / 100.0,
+                            Model::ModelManager::getInstance().getModelDownloadProgress(i, currentVariant) / 100.0,
                             ImVec2(cardWidth - 18, 0));
                     }
                 }
@@ -493,17 +674,40 @@ inline void renderModelManager(bool &openModal)
                         selectButton.borderSize = 1.0F;
                         selectButton.state = ButtonState::ACTIVE;
                     }
-
                     selectButton.onClick = [i, models]()
                     {
-                        Model::ModelManager::getInstance().switchModel(
-                            models[i].name,
-                            modelVariants[i]
-                        );
+                        std::string variant = Model::ModelManager::getInstance().getCurrentVariantForModel(models[i].name);
+                        Model::ModelManager::getInstance().switchModel(models[i].name, variant);
                     };
+                    selectButton.size = ImVec2(cardWidth - 18 /*gap*/ - 5 /*delete button size*/ - 24, 0);
                 }
 
                 Button::render(selectButton);
+
+				static bool openModelDeleteModal = false;
+
+                if (isDownloaded)
+                {
+                    ImGui::SameLine();
+					ImGui::SetCursorPosY(ImGui::GetCursorPosY() - 2);
+					ImGui::SetCursorPosX(ImGui::GetCursorPosX() + ImGui::GetContentRegionAvail().x - 24 - 2);
+
+                    // Render the "Delete" button on the same row.
+                    ButtonConfig deleteButton;
+                    deleteButton.id = "##delete" + std::to_string(i);
+                    deleteButton.size = ImVec2(24, 0);
+                    deleteButton.backgroundColor = RGBAToImVec4(200, 50, 50, 255);
+                    deleteButton.hoverColor = RGBAToImVec4(220, 70, 70, 255);
+                    deleteButton.activeColor = RGBAToImVec4(200, 50, 50, 255);
+                    deleteButton.icon = ICON_CI_TRASH; // Use your trash icon.
+                    deleteButton.onClick = []()
+                        {
+							openModelDeleteModal = true;
+                        };
+                    Button::render(deleteButton);
+                }
+
+				renderDeleteModelModal(openModelDeleteModal, i, currentVariant);
 
                 ImGui::EndChild();
 
@@ -512,8 +716,7 @@ inline void renderModelManager(bool &openModal)
                     ImVec2 min = ImGui::GetItemRectMin();
                     ImVec2 max = ImGui::GetItemRectMax();
                     ImU32 borderColor = IM_COL32(172, 131, 255, 255 / 2);
-                    ImGui::GetWindowDrawList()->AddRect(
-                        min, max, borderColor, 8.0f, 0, 1.0f);
+                    ImGui::GetWindowDrawList()->AddRect(min, max, borderColor, 8.0f, 0, 1.0f);
                 }
 
                 ImGui::PopStyleVar();
@@ -527,29 +730,22 @@ inline void renderModelManager(bool &openModal)
                 }
             }
         },
-        openModal};
+        openModal
+    };
 
     ModalWindow::render(modalConfig);
 }
 
+// TODO: refactor to be reusable
 inline void renderClearChatModal(bool& openModal)
 {
 	ModalConfig modalConfig
 	{
-		"Clear Chat",
-		"Clear Chat",
-		ImVec2(300, 120),
+		"Confirm Clear Chat",
+		"Confirm Clear Chat",
+		ImVec2(300, 96),
 		[&]()
 		{
-			// Render the confirmation message
-			LabelConfig confirmationLabel;
-			confirmationLabel.id = "##clearChatConfirmation";
-			confirmationLabel.label = "Are you sure you want to clear the chat?";
-			confirmationLabel.size = ImVec2(0, 0);
-			confirmationLabel.fontType = FontsManager::REGULAR;
-			confirmationLabel.alignment = Alignment::CENTER;
-			Label::render(confirmationLabel);
-
 			// Render the buttons
 			std::vector<ButtonConfig> buttons;
             
@@ -701,7 +897,10 @@ inline void renderInputField(const float inputHeight, const float inputWidth)
 				// TODO: add top_k to the completion parameters
 				// completionParams.topK            = presetManager.getCurrentPreset().value().get().top_k;
                 completionParams.streaming          = true;
-				completionParams.kvCacheFilePath    = chatManager.getCurrentKvChatPath().value().string();
+				completionParams.kvCacheFilePath    = chatManager.getCurrentKvChatPath(
+                    modelManager.getCurrentModelName().value(),
+					modelManager.getCurrentVariantType()
+                ).value().string();
             }
             int jobId = modelManager.startChatCompletionJob(completionParams);
 
