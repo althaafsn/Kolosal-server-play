@@ -134,8 +134,9 @@ protected:
                 ImGui::PushStyleVar(ImGuiStyleVar_ChildRounding, 4.0f);
 
                 // Use stable ID for child window
-                ImGui::BeginChild(ImGui::GetID(("##code_block_" + std::to_string(block.render_id)).c_str()),
-                    ImVec2(0, total_height + 36 + (!block.lang.empty() ? 4 : 0)), false, ImGuiWindowFlags_NoScrollbar);
+                ImGui::BeginChild(ImGui::GetID(("##code_content_" + std::to_string(block.render_id)).c_str()),
+                    ImVec2(0, total_height + 36 + (!block.lang.empty() ? 4 : 0)), false,
+                    ImGuiWindowFlags_NoScrollbar);
 
                 ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 4);
 
@@ -172,7 +173,7 @@ protected:
                 // Input field
                 bool focusInput = false;
                 InputFieldConfig input_cfg(
-                    ("##code_content_" + std::to_string(block.render_id)).c_str(), // Stable ID
+                    ("##code_input_" + std::to_string(block.render_id)).c_str(),
                     ImVec2(-FLT_MIN, total_height + 4),
                     block.content,
                     focusInput
@@ -210,6 +211,8 @@ protected:
 inline void RenderMarkdown(const char* text)
 {
     static MarkdownRenderer s_renderer;
+	s_renderer.max_code_id = Chat::ChatManager::getInstance().getCurrentChat().value().messages.size();
+
     if (!text || !*text)
         return;
 
