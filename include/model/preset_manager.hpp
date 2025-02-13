@@ -124,6 +124,14 @@ namespace Model
 
             m_currentPresetName = presetName;
             m_currentPresetIndex = it->second;
+
+			// Set the last modified time to the current time
+            {
+				// unlock the mutex before saving the preset
+				lock.unlock();
+                saveCurrentPresetInternal();
+            }
+
             return true;
         }
 
@@ -239,7 +247,7 @@ namespace Model
                 50.0f,
                 42,
                 0.0f,
-                2048.0f };
+                0.0f };
 
             size_t newIndex = m_presets.size();
             m_presets.push_back(defaultPreset);

@@ -5,414 +5,397 @@
 #include "ui/widgets.hpp"
 #include "config.hpp"
 #include "nfd.h"
+#include <filesystem>
+#include <string>
+#include <vector>
+#include <functional>
 
-/**
- * @brief Renders the model settings sidebar with the specified width.
- *
- * @param sidebarWidth The width of the sidebar.
- */
-void renderSamplingSettings(const float sidebarWidth)
-{
-    ImGui::Spacing();
-    ImGui::Spacing();
-
-    LabelConfig labelConfig;
-    labelConfig.id = "##systempromptlabel";
-    labelConfig.label = "System Prompt";
-    labelConfig.icon = ICON_CI_GEAR;
-    labelConfig.size = ImVec2(Config::Icon::DEFAULT_FONT_SIZE, 0);
-    labelConfig.fontType = FontsManager::BOLD;
-    Label::render(labelConfig);
-
-    ImGui::Spacing();
-    ImGui::Spacing();
-
-    // Get reference to current preset
-    auto currentPresetOpt = Model::PresetManager::getInstance().getCurrentPreset();
-    if (!currentPresetOpt)
+class PresetSelectionComponent {
+public:
+    // m_sidebarWidth is taken by reference so it always reflects the current width.
+    PresetSelectionComponent(float& sidebarWidth)
+        : m_sidebarWidth(sidebarWidth)
     {
-        // Handle the case where there's no current preset
-        return;
     }
-    // Get the reference to the actual preset
-    Model::ModelPreset& currentPreset = currentPresetOpt->get();
 
-    // System prompt input
-    static bool focusSystemPrompt = true;
-    ImVec2 inputSize = ImVec2(sidebarWidth - 20, 100);
+    void render() {
+        renderPresetLabel();
+        ImGui::Spacing();
+        ImGui::Spacing();
 
-    // Provide a processInput lambda to update the systemPrompt
-    InputFieldConfig inputFieldConfig(
-        "##systemprompt",           // ID
-        inputSize,                  // Size
-        currentPreset.systemPrompt, // Input text buffer
-        focusSystemPrompt);         // Focus
-    inputFieldConfig.placeholderText = "Enter your system prompt here...";
-    inputFieldConfig.processInput = [&](const std::string& input)
+        updatePresetNames();
+        int currentIndex = getCurrentPresetIndex();
+
+        const float comboWidth = m_sidebarWidth - 54;
+        if (ComboBox::render("##modelpresets", m_presetNames.data(),
+            static_cast<int>(m_presetNames.size()), currentIndex, comboWidth))
         {
-            currentPreset.systemPrompt = input;
+            // When a preset is selected, switch to it.
+            Model::PresetManager::getInstance().switchPreset(m_presetNames[currentIndex]);
+        }
+
+        renderDeleteButton();
+        renderSaveButtons();
+    }
+
+    // Callback used to request a "Save As" dialog.
+    std::function<void()> m_onSaveAsRequested;
+
+private:
+    float& m_sidebarWidth;
+    // Store preset names in a vector of strings so that the c_str() pointers remain valid.
+    std::vector<std::string> m_presetNameStorage;
+    std::vector<const char*> m_presetNames;
+
+    void renderPresetLabel() {
+        LabelConfig presetLabel{
+            "##modelpresets_label",             // id
+            "Model Presets",                    // label
+            ICON_CI_PACKAGE,                    // icon
+            ImVec2(Config::Icon::DEFAULT_FONT_SIZE, 0),
+            0.0f,
+            0.0f,
+            FontsManager::BOLD
         };
-    InputField::renderMultiline(inputFieldConfig);
+        Label::render(presetLabel);
+    }
 
-    ImGui::Spacing();
-    ImGui::Spacing();
+    // Refresh the preset name storage and build an array of c_str pointers.
+    void updatePresetNames() {
+        const auto& presets = Model::PresetManager::getInstance().getPresets();
+        m_presetNameStorage.clear();
 
-    // Model settings label
-    LabelConfig modelSettingsLabelConfig;
-    modelSettingsLabelConfig.id = "##modelsettings";
-    modelSettingsLabelConfig.label = "Model Settings";
-    modelSettingsLabelConfig.icon = ICON_CI_SETTINGS;
-    modelSettingsLabelConfig.size = ImVec2(Config::Icon::DEFAULT_FONT_SIZE, 0);
-	modelSettingsLabelConfig.fontType = FontsManager::BOLD;
-    Label::render(modelSettingsLabelConfig);
-
-    ImGui::Spacing();
-    ImGui::Spacing();
-
-    // Sampling settings
-    Slider::render("##temperature", currentPreset.temperature, 0.0f, 1.0f, sidebarWidth - 30);
-    Slider::render("##top_p", currentPreset.top_p, 0.0f, 1.0f, sidebarWidth - 30);
-    Slider::render("##top_k", currentPreset.top_k, 0.0f, 100.0f, sidebarWidth - 30, "%.0f");
-    IntInputField::render("##random_seed", currentPreset.random_seed, sidebarWidth - 30);
-
-    ImGui::Spacing();
-    ImGui::Spacing();
-
-    // Generation settings
-    Slider::render("##min_length", currentPreset.min_length, 0.0f, 4096.0f, sidebarWidth - 30, "%.0f");
-    Slider::render("##max_new_tokens", currentPreset.max_new_tokens, 0.0f, 4096.0f, sidebarWidth - 30, "%.0f");
-}
-
-/**
- * @brief Helper function to confirm the "Save Preset As" dialog.
- *
- * This function is called when the user clicks the "Save" button or pressed enter in the dialog.
- * It saves the current preset under the new name and closes the dialog.
- */
-void confirmSaveAsDialog(std::string& newPresetName)
-{
-    if (!newPresetName.empty())
-    {
-        // Start the asynchronous copy operation and wait for it to complete
-        if (Model::PresetManager::getInstance().copyCurrentPresetAs(newPresetName).get())
-        {
-            Model::PresetManager::getInstance().switchPreset(newPresetName);
-            ImGui::CloseCurrentPopup();
-            newPresetName.clear();
+        // Copy preset names and sort them alphabetically
+        for (const auto& preset : presets) {
+            m_presetNameStorage.push_back(preset.name);
         }
-        else
-        {
-            // Handle failure (e.g., show an error message)
-            std::cerr << "Failed to copy preset." << std::endl;
+        // Sort the names to match the sorted order used by getSortedPresetIndex
+        std::sort(m_presetNameStorage.begin(), m_presetNameStorage.end());
+
+        // Update m_presetNames with sorted names
+        m_presetNames.clear();
+        for (const auto& name : m_presetNameStorage) {
+            m_presetNames.push_back(name.c_str());
         }
     }
-}
 
-void renderSaveAsDialog(bool& showSaveAsDialog)
-{
-    static std::string newPresetName;
-    ModalConfig ModalConfig
-    {
-        "Save Preset As",
-        "Save As New Preset",
-        ImVec2(300, 98),
-        [&]()
-        {
-            static bool focusNewPresetName = true;
-            if (newPresetName.empty())
-            {
-                auto currentPresetOpt = Model::PresetManager::getInstance().getCurrentPreset();
-                if (currentPresetOpt)
-                {
-                    newPresetName = currentPresetOpt->get().name;
+    int getCurrentPresetIndex() {
+        auto currentPresetOpt = Model::PresetManager::getInstance().getCurrentPreset();
+        if (currentPresetOpt) {
+            const std::string& currentName = currentPresetOpt->get().name;
+            // Find the index in the sorted m_presetNameStorage
+            auto it = std::lower_bound(m_presetNameStorage.begin(), m_presetNameStorage.end(), currentName);
+            if (it != m_presetNameStorage.end() && *it == currentName) {
+                return static_cast<int>(std::distance(m_presetNameStorage.begin(), it));
+            }
+        }
+        return 0;
+    }
+
+    void renderDeleteButton() {
+        auto& manager = Model::PresetManager::getInstance();
+        const auto& presets = manager.getPresets();
+        ImGui::SameLine();
+        ButtonConfig deleteConfig;
+        deleteConfig.id = "##delete";
+        deleteConfig.icon = ICON_CI_TRASH;
+        deleteConfig.size = ImVec2(24, 0);
+        deleteConfig.alignment = Alignment::CENTER;
+        deleteConfig.backgroundColor = Config::Color::TRANSPARENT_COL;
+        deleteConfig.hoverColor = RGBAToImVec4(191, 88, 86, 255);
+        deleteConfig.activeColor = RGBAToImVec4(165, 29, 45, 255);
+        deleteConfig.onClick = [&]() {
+            if (presets.size() > 1 && manager.getCurrentPreset()) {
+                // Get the index of the current preset in the sorted list
+                int curIndex = static_cast<int>(manager.getSortedPresetIndex(manager.getCurrentPreset()->get().name));
+                std::string currentPresetName = manager.getCurrentPreset()->get().name;
+
+                // Delete the current preset.
+                if (manager.deletePreset(currentPresetName).get()) {
+                    // Get the updated preset list.
+                    const auto& updatedPresets = manager.getPresets();
+                    if (!updatedPresets.empty()) {
+                        // Pick the previous preset if possible, else the first preset.
+                        int newIndex = curIndex > 0 ? curIndex - 1 : 0;
+                        manager.switchPreset(updatedPresets[newIndex].name);
+                    }
                 }
             }
+            };
+        deleteConfig.state = (presets.size() <= 1) ? ButtonState::DISABLED : ButtonState::NORMAL;
+        Button::render(deleteConfig);
+    }
 
-            // Input field configuration
-            InputFieldConfig inputConfig(
-                "##newpresetname",
-                ImVec2(ImGui::GetWindowSize().x - 32.0F, 0),
-                newPresetName,
-                focusNewPresetName);
-            inputConfig.placeholderText = "Enter new preset name...";
-            inputConfig.flags = ImGuiInputTextFlags_EnterReturnsTrue;
-            inputConfig.frameRounding = 5.0F;
-            inputConfig.processInput = [](const std::string& input) {
-                if (Model::PresetManager::getInstance().copyCurrentPresetAs(input).get())
-                {
-                    Model::PresetManager::getInstance().switchPreset(input);
-                    ImGui::CloseCurrentPopup();
-                    newPresetName.clear();
-                }
+    void renderSaveButtons() {
+        ImGui::Spacing();
+        ImGui::Spacing();
+        ButtonConfig saveConfig;
+        saveConfig.id = "##save";
+        saveConfig.label = "Save";
+        saveConfig.size = ImVec2(m_sidebarWidth / 2 - 15, 0);
+        saveConfig.onClick = [&]() {
+            if (Model::PresetManager::getInstance().hasUnsavedChanges()) {
+                Model::PresetManager::getInstance().saveCurrentPreset().get();
+            }
             };
 
-            InputField::render(inputConfig);
-        },
-        showSaveAsDialog
+        ButtonConfig saveAsConfig;
+        saveAsConfig.id = "##saveasnew";
+        saveAsConfig.label = "Save as New";
+        saveAsConfig.size = ImVec2(m_sidebarWidth / 2 - 15, 0);
+        // When the save-as button is clicked, invoke the callback.
+        saveAsConfig.onClick = [&]() { m_onSaveAsRequested(); };
+
+        const bool hasChanges = Model::PresetManager::getInstance().hasUnsavedChanges();
+        saveConfig.backgroundColor = hasChanges ? RGBAToImVec4(26, 95, 180, 255)
+            : RGBAToImVec4(26, 95, 180, 128);
+        saveConfig.hoverColor = RGBAToImVec4(53, 132, 228, 255);
+        saveConfig.activeColor = RGBAToImVec4(26, 95, 180, 255);
+        Button::renderGroup({ saveConfig, saveAsConfig }, 9, ImGui::GetCursorPosY(), 10);
+
+		ImGui::Spacing(); ImGui::Spacing();
+    }
+};
+
+class SamplingSettingsComponent {
+public:
+    // Takes sidebarWidth by reference.
+    SamplingSettingsComponent(float& sidebarWidth, bool& focusSystemPrompt)
+        : m_sidebarWidth(sidebarWidth), m_focusSystemPrompt(focusSystemPrompt)
+    {
+    }
+
+    void render() {
+        auto currentPresetOpt = Model::PresetManager::getInstance().getCurrentPreset();
+        if (!currentPresetOpt) return;
+        auto& currentPreset = currentPresetOpt->get();
+
+        // Render the system prompt label and multi-line input field.
+		ImGui::Spacing(); ImGui::Spacing();
+        Label::render(m_systemPromptLabel);
+        ImGui::Spacing();
+        ImGui::Spacing();
+        InputFieldConfig inputConfig(
+            "##systemprompt",
+            ImVec2(m_sidebarWidth - 20, 100),
+            currentPreset.systemPrompt,
+            m_focusSystemPrompt
+        );
+        inputConfig.placeholderText = "Enter your system prompt here...";
+        inputConfig.processInput = [&](const std::string& input) {
+            currentPreset.systemPrompt = input;
+            };
+        InputField::renderMultiline(inputConfig);
+
+        // Render the model settings label and sampling sliders/inputs.
+        ImGui::Spacing();
+        ImGui::Spacing();
+        Label::render(m_modelSettingsLabel);
+        ImGui::Spacing();
+        ImGui::Spacing();
+        const float sliderWidth = m_sidebarWidth - 30;
+        Slider::render("##temperature", currentPreset.temperature, 0.0f, 1.0f, sliderWidth);
+        Slider::render("##top_p", currentPreset.top_p, 0.0f, 1.0f, sliderWidth);
+        Slider::render("##top_k", currentPreset.top_k, 0.0f, 100.0f, sliderWidth, "%.0f");
+        IntInputField::render("##random_seed", currentPreset.random_seed, sliderWidth);
+        ImGui::Spacing();
+        ImGui::Spacing();
+        Slider::render("##min_length", currentPreset.min_length, 0.0f, 4096.0f, sliderWidth, "%.0f");
+        Slider::render("##max_new_tokens", currentPreset.max_new_tokens, 0.0f, 8192.0f, sliderWidth, "%.0f");
+    }
+
+    // Optional setters to override default labels.
+    void setSystemPromptLabel(const LabelConfig& label) { m_systemPromptLabel = label; }
+    void setModelSettingsLabel(const LabelConfig& label) { m_modelSettingsLabel = label; }
+
+private:
+    float& m_sidebarWidth;
+    bool& m_focusSystemPrompt;
+    LabelConfig m_systemPromptLabel{
+        "##systempromptlabel",
+        "System Prompt",
+        ICON_CI_GEAR,
+        ImVec2(Config::Icon::DEFAULT_FONT_SIZE, 0),
+        0.0f,
+        0.0f,
+        FontsManager::BOLD
     };
-    ModalConfig.padding = ImVec2(16.0F, 8.0F);
+    LabelConfig m_modelSettingsLabel{
+        "##modelsettings",
+        "Model Settings",
+        ICON_CI_SETTINGS,
+        ImVec2(Config::Icon::DEFAULT_FONT_SIZE, 0),
+        0.0f,
+        0.0f,
+        FontsManager::BOLD
+    };
+};
 
-    ModalWindow::render(ModalConfig);
-}
-
-/**
- * @brief Renders the model settings sidebar with the specified width.
- *
- * @param sidebarWidth The width of the sidebar.
- */
-void renderModelPresetsSelection(const float sidebarWidth)
-{
-    static bool showSaveAsDialog = false;
-
-    // Model presets label
+class SaveAsDialogComponent {
+public:
+    // Takes sidebarWidth by reference.
+    SaveAsDialogComponent(float& sidebarWidth, bool& focusNewPresetName)
+        : m_sidebarWidth(sidebarWidth), m_focusNewPresetName(focusNewPresetName)
     {
-        LabelConfig labelConfig;
-        labelConfig.id = "##modelpresets";
-        labelConfig.label = "Model Presets";
-        labelConfig.icon = ICON_CI_PACKAGE;
-        labelConfig.size = ImVec2(Config::Icon::DEFAULT_FONT_SIZE, 0);
-		labelConfig.fontType = FontsManager::BOLD;
-        Label::render(labelConfig);
     }
 
-    ImGui::Spacing();
-    ImGui::Spacing();
-
-    // Get the current presets and create a vector of names
-    const std::vector<Model::ModelPreset>& presets = Model::PresetManager::getInstance().getPresets();
-    std::vector<const char*> presetNames;
-    for (const Model::ModelPreset& preset : presets)
-    {
-        presetNames.push_back(preset.name.c_str());
-    }
-
-    // Get the current preset index
-    int currentIndex = 0;
-    auto currentPresetOpt = Model::PresetManager::getInstance().getCurrentPreset();
-    if (currentPresetOpt)
-    {
-        // Get the reference to the current preset
-        const Model::ModelPreset& currentPreset = currentPresetOpt->get();
-        currentIndex = static_cast<int>(Model::PresetManager::getInstance().getSortedPresetIndex(currentPreset.name));
-    }
-
-    // Render the ComboBox for model presets
-    float comboBoxWidth = sidebarWidth - 54;
-    if (ComboBox::render("##modelpresets",
-        presetNames.data(),
-        static_cast<int>(presetNames.size()),
-        currentIndex,
-        comboBoxWidth))
-    {
-        // User has selected a new preset
-        const char* selectedPresetName = presetNames[currentIndex];
-        Model::PresetManager::getInstance().switchPreset(selectedPresetName);
-    }
-
-    ImGui::SameLine();
-
-    // Delete button
-    {
-        ButtonConfig deleteButtonConfig;
-        deleteButtonConfig.id = "##delete";
-        deleteButtonConfig.label = std::nullopt;
-        deleteButtonConfig.icon = ICON_CI_TRASH;
-        deleteButtonConfig.size = ImVec2(24, 0);
-        deleteButtonConfig.onClick = [&]()
-            {
-                if (Model::PresetManager::getInstance().getPresets().size() > 1)
-                { // Prevent deleting last preset
-                    auto currentPresetOpt = Model::PresetManager::getInstance().getCurrentPreset();
-                    if (currentPresetOpt)
-                    {
-                        const std::string& presetName = currentPresetOpt->get().name;
-                        // Start the asynchronous deletion and wait for completion
-                        if (Model::PresetManager::getInstance().deletePreset(presetName).get())
-                        {
-                            // Update UI by reloading presets
-                            // Since we're not using observers, we need to refresh the presets and current index
-                        }
-                        else
-                        {
-                            // Handle failure
-                            std::cerr << "Failed to delete preset." << std::endl;
-                        }
-                    }
+    void render(bool& showDialog, std::string& newPresetName) {
+        // Always render the modal so that it stays open if already open.
+        ModalConfig config{
+            "Save Preset As",           // Title
+            "Save As New Preset",       // Identifier
+            ImVec2(300, 98),
+            [&]() {
+                // If no new preset name is provided, default to the current preset name.
+                if (newPresetName.empty() && Model::PresetManager::getInstance().getCurrentPreset()) {
+                    newPresetName = Model::PresetManager::getInstance().getCurrentPreset()->get().name;
                 }
-            };
-        deleteButtonConfig.backgroundColor = Config::Color::TRANSPARENT_COL;
-        deleteButtonConfig.hoverColor = RGBAToImVec4(191, 88, 86, 255);
-        deleteButtonConfig.activeColor = RGBAToImVec4(165, 29, 45, 255);
-        deleteButtonConfig.alignment = Alignment::CENTER;
+                // Set up the input field configuration
+                InputFieldConfig inputConfig(
+                    "##newpresetname",
+                    ImVec2(ImGui::GetWindowSize().x - 32.0f, 0),
+                    newPresetName,
+                    m_focusNewPresetName
+                );
+                inputConfig.placeholderText = "Enter new preset name...";
+                inputConfig.flags = ImGuiInputTextFlags_EnterReturnsTrue;
+                inputConfig.frameRounding = 5.0f;
 
-        // Only enable delete button if we have more than one preset
-        if (presets.size() <= 1)
-        {
-            deleteButtonConfig.state = ButtonState::DISABLED;
-        }
-
-        Button::render(deleteButtonConfig);
-
-    } // End of delete button
-
-    ImGui::Spacing();
-    ImGui::Spacing();
-
-    // Save and Save as New buttons
-    {
-        ButtonConfig saveButtonConfig;
-        saveButtonConfig.id = "##save";
-        saveButtonConfig.label = "Save";
-        saveButtonConfig.icon = std::nullopt;
-        saveButtonConfig.size = ImVec2(sidebarWidth / 2 - 15, 0);
-        saveButtonConfig.onClick = [&]()
-            {
-                bool hasChanges = Model::PresetManager::getInstance().hasUnsavedChanges();
-                if (hasChanges)
-                {
-                    // Start the asynchronous save operation and wait for completion
-                    if (Model::PresetManager::getInstance().saveCurrentPreset().get())
+                // Process the input when the user hits Enter.
+                inputConfig.processInput = [&](const std::string& input) {
+                    if (!input.empty() &&
+                        Model::PresetManager::getInstance().copyCurrentPresetAs(input).get())
                     {
-                        // Preset saved successfully
+                        Model::PresetManager::getInstance().switchPreset(input);
+                        showDialog = false;
+                        newPresetName.clear();
+						ImGui::CloseCurrentPopup();
                     }
-                    else
-                    {
-                        // Handle failure
-                        std::cerr << "Failed to save preset." << std::endl;
-                    }
-                }
-            };
-        saveButtonConfig.backgroundColor = Model::PresetManager::getInstance().hasUnsavedChanges() ? RGBAToImVec4(26, 95, 180, 255) : RGBAToImVec4(26, 95, 180, 128);
-        saveButtonConfig.hoverColor = RGBAToImVec4(53, 132, 228, 255);
-        saveButtonConfig.activeColor = RGBAToImVec4(26, 95, 180, 255);
+                };
 
-        ButtonConfig saveAsNewButtonConfig;
-        saveAsNewButtonConfig.id = "##saveasnew";
-        saveAsNewButtonConfig.label = "Save as New";
-        saveAsNewButtonConfig.icon = std::nullopt;
-        saveAsNewButtonConfig.size = ImVec2(sidebarWidth / 2 - 15, 0);
-        saveAsNewButtonConfig.onClick = [&]()
-            {
-                showSaveAsDialog = true;
-            };
-
-        std::vector<ButtonConfig> buttons = { saveButtonConfig, saveAsNewButtonConfig };
-
-        // Render the buttons
-        Button::renderGroup(buttons, 9, ImGui::GetCursorPosY(), 10);
-
-    } // End of save and save as new buttons
-
-    ImGui::Spacing();
-    ImGui::Spacing();
-
-    // Render the "Save As" dialog if needed
-    renderSaveAsDialog(showSaveAsDialog);
-}
-
-/**
- * @brief Exports the current model presets to a JSON file.
- */
-void exportPresets()
-{
-    // Initialize variables
-    nfdu8char_t* outPath = nullptr;
-    nfdu8filteritem_t filters[2] = { {"JSON Files", "json"} };
-
-    // Zero out the args struct
-    nfdsavedialogu8args_t args;
-    memset(&args, 0, sizeof(nfdsavedialogu8args_t));
-
-    // Set up filter arguments
-    args.filterList = filters;
-    args.filterCount = 1;
-
-    // Show save dialog
-    nfdresult_t result = NFD_SaveDialogU8_With(&outPath, &args);
-
-    if (result == NFD_OKAY)
-    {
-        std::filesystem::path savePath(outPath);
-        // Optionally, enforce the .json extension
-        if (savePath.extension() != ".json")
-        {
-            savePath += ".json";
-        }
-
-        // Free the memory allocated by NFD
-        NFD_FreePathU8(outPath);
-
-        // Save the preset to the chosen path
-        bool success = Model::PresetManager::getInstance().saveCurrentPresetToPath(savePath).get();
-
-        if (success)
-        {
-            std::cout << "Preset saved successfully to: " << savePath << std::endl;
-        }
-        else
-        {
-            std::cerr << "Failed to save preset to: " << savePath << std::endl;
-        }
-    }
-    else if (result == NFD_CANCEL)
-    {
-        std::cout << "Save dialog canceled by the user." << std::endl;
-    }
-    else
-    {
-        std::cerr << "Error from NFD: " << NFD_GetError() << std::endl;
-    }
-}
-
-/**
- * @brief Renders the model settings sidebar with the specified width.
- *
- * @param sidebarWidth The width of the sidebar.
- */
-void renderModelPresetSidebar(float& sidebarWidth)
-{
-    ImGuiIO& io = ImGui::GetIO();
-    const float sidebarHeight = io.DisplaySize.y - Config::TITLE_BAR_HEIGHT;
-
-    ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - sidebarWidth, Config::TITLE_BAR_HEIGHT), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(sidebarWidth, sidebarHeight), ImGuiCond_Always);
-    ImGui::SetNextWindowSizeConstraints(
-        ImVec2(Config::ModelPresetSidebar::MIN_SIDEBAR_WIDTH, sidebarHeight),
-        ImVec2(Config::ModelPresetSidebar::MAX_SIDEBAR_WIDTH, sidebarHeight));
-
-    ImGuiWindowFlags sidebarFlags = ImGuiWindowFlags_NoMove |
-        ImGuiWindowFlags_NoCollapse |
-        ImGuiWindowFlags_NoTitleBar |
-        ImGuiWindowFlags_NoBackground |
-        ImGuiWindowFlags_NoScrollbar;
-
-    ImGui::Begin("Model Settings", nullptr, sidebarFlags);
-
-    ImVec2 currentSize = ImGui::GetWindowSize();
-    sidebarWidth = currentSize.x;
-
-    renderModelPresetsSelection(sidebarWidth);
-    ImGui::Separator();
-    renderSamplingSettings(sidebarWidth);
-    ImGui::Separator();
-
-    ImGui::Spacing();
-    ImGui::Spacing();
-
-    // Export button
-    ButtonConfig exportButtonConfig;
-    exportButtonConfig.id = "##export";
-    exportButtonConfig.label = "Export as JSON";
-    exportButtonConfig.icon = std::nullopt;
-    exportButtonConfig.size = ImVec2(sidebarWidth - 20, 0);
-    exportButtonConfig.onClick = [&]()
-        {
-            exportPresets();
+                // Render the input field.
+                InputField::render(inputConfig);
+            },
+            showDialog // Initial open flag passed in.
         };
-    exportButtonConfig.backgroundColor = Config::Color::SECONDARY;
-    exportButtonConfig.hoverColor = Config::Color::PRIMARY;
-    exportButtonConfig.activeColor = Config::Color::SECONDARY;
-    Button::render(exportButtonConfig);
 
-    ImGui::End();
-}
+        // Set modal padding
+        config.padding = ImVec2(16.0f, 8.0f);
+        ModalWindow::render(config);
+
+        // If the popup is no longer open, ensure showDialog remains false.
+        if (!ImGui::IsPopupOpen(config.id.c_str()))
+            showDialog = false;
+    }
+
+private:
+    float& m_sidebarWidth;
+    bool& m_focusNewPresetName;
+};
+
+class ExportButtonComponent {
+public:
+    // Takes sidebarWidth by reference.
+    ExportButtonComponent(float& sidebarWidth)
+        : m_sidebarWidth(sidebarWidth)
+    {
+        m_exportConfig.id = "##export";
+        m_exportConfig.label = "Export as JSON";
+        m_exportConfig.size = ImVec2(0, 0);
+        m_exportConfig.alignment = Alignment::CENTER;
+        m_exportConfig.onClick = [this]() { exportPresets(); };
+        m_exportConfig.state = ButtonState::NORMAL;
+        m_exportConfig.fontSize = FontsManager::MD;
+        m_exportConfig.backgroundColor = Config::Color::SECONDARY;
+        m_exportConfig.hoverColor = Config::Color::PRIMARY;
+        m_exportConfig.activeColor = Config::Color::SECONDARY;
+    }
+
+    void render() {
+        ImGui::Spacing();
+        ImGui::Spacing();
+        m_exportConfig.size = ImVec2(m_sidebarWidth - 20, 0);
+        Button::render(m_exportConfig);
+    }
+
+private:
+    float& m_sidebarWidth;
+    ButtonConfig m_exportConfig;
+
+    void exportPresets() {
+        nfdu8char_t* outPath = nullptr;
+        nfdu8filteritem_t filters[1] = { {"JSON Files", "json"} };
+        nfdsavedialogu8args_t args{};
+        args.filterList = filters;
+        args.filterCount = 1;
+        if (NFD_SaveDialogU8_With(&outPath, &args) == NFD_OKAY) {
+            std::filesystem::path savePath(outPath);
+            NFD_FreePathU8(outPath);
+            if (savePath.extension() != ".json") {
+                savePath += ".json";
+            }
+            Model::PresetManager::getInstance().saveCurrentPresetToPath(savePath).get();
+        }
+    }
+};
+
+class ModelPresetSidebar {
+public:
+    ModelPresetSidebar()
+        : m_sidebarWidth(Config::ChatHistorySidebar::SIDEBAR_WIDTH),
+        m_presetSelectionComponent(m_sidebarWidth),
+        m_samplingSettingsComponent(m_sidebarWidth, m_focusSystemPrompt),
+        m_saveAsDialogComponent(m_sidebarWidth, m_focusNewPresetName),
+        m_exportButtonComponent(m_sidebarWidth)
+    {
+        // Set up the callback for "Save as New" so that it shows the modal.
+        m_presetSelectionComponent.m_onSaveAsRequested = [this]() { m_showSaveAsDialog = true; };
+    }
+
+    void render() {
+        ImGuiIO& io = ImGui::GetIO();
+        const float sidebarHeight = io.DisplaySize.y - Config::TITLE_BAR_HEIGHT;
+
+        ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x - m_sidebarWidth, Config::TITLE_BAR_HEIGHT), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(m_sidebarWidth, sidebarHeight), ImGuiCond_Always);
+        ImGui::SetNextWindowSizeConstraints(
+            ImVec2(Config::ModelPresetSidebar::MIN_SIDEBAR_WIDTH, sidebarHeight),
+            ImVec2(Config::ModelPresetSidebar::MAX_SIDEBAR_WIDTH, sidebarHeight)
+        );
+
+        ImGui::Begin("Model Settings", nullptr,
+            ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoCollapse |
+            ImGuiWindowFlags_NoTitleBar |
+            ImGuiWindowFlags_NoBackground |
+            ImGuiWindowFlags_NoScrollbar);
+        // Update m_sidebarWidth so that all components see the new size.
+        m_sidebarWidth = ImGui::GetWindowSize().x;
+
+        m_presetSelectionComponent.render();
+        ImGui::Separator();
+        m_samplingSettingsComponent.render();
+        ImGui::Separator();
+        m_exportButtonComponent.render();
+
+        ImGui::End();
+
+        m_saveAsDialogComponent.render(m_showSaveAsDialog, m_newPresetName);
+    }
+
+	float getSidebarWidth() const {
+		return m_sidebarWidth;
+	}
+
+private:
+    float m_sidebarWidth;
+    bool m_showSaveAsDialog = false;
+    std::string m_newPresetName;
+    bool m_focusSystemPrompt = true;
+    bool m_focusNewPresetName = true;
+
+    PresetSelectionComponent m_presetSelectionComponent;
+    SamplingSettingsComponent m_samplingSettingsComponent;
+    SaveAsDialogComponent m_saveAsDialogComponent;
+    ExportButtonComponent m_exportButtonComponent;
+};

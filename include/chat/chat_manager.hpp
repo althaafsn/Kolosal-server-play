@@ -130,7 +130,7 @@ namespace Chat
                 if (saveResult) 
                 {
                     m_persistence->deleteChat(oldName).get();
-                    m_persistence->deleteKvChat(oldName).get();
+                    m_persistence->renameKvChat(oldName, newName).get();
                 }
 
                 return saveResult;
@@ -270,7 +270,7 @@ namespace Chat
             return newName;
         }
 
-        bool deleteChat(const std::string& name) 
+        bool deleteChat(const std::string& name, const std::string& modelName, const std::string& modelVariant) 
         {
             std::unique_lock<std::shared_mutex> lock(m_mutex);
 
@@ -315,6 +315,8 @@ namespace Chat
 				return false;
             }
 
+            lock.unlock();
+
             if (!m_persistence->deleteKvChat(name).get())
             {
 				std::cerr << "[ChatManager] Failed to delete kv chat: " << name << std::endl;
@@ -324,6 +326,53 @@ namespace Chat
             std::cout << "[ChatManager] Deleted chat: " << name << std::endl;
 
             return true;
+        }
+
+        void deleteMessage(const std::string& chatName, const Message& message) {
+            // Lock the mutex to ensure thread-safe access.
+            std::unique_lock<std::shared_mutex> lock(m_mutex);
+
+            // Find the chat by its name.
+            auto chatIt = std::find_if(m_chats.begin(), m_chats.end(),
+                [&chatName](const auto& chat) { return chat.name == chatName; });
+
+            if (chatIt != m_chats.end()) {
+                // Search for the message with the matching id.
+                auto& messages = chatIt->messages;
+                auto msgIt = std::find_if(messages.begin(), messages.end(),
+                    [&message](const Message& m) { return m.id == message.id; });
+
+                // If the message was found, erase it from the chat.
+                if (msgIt != messages.end()) {
+                    messages.erase(msgIt);
+                    chatIt->lastModified = static_cast<int>(std::time(nullptr));
+                }
+            }
+        }
+
+        void deleteMessage(const std::string& chatName, int index) {
+            // Lock the mutex to ensure thread-safe access.
+            std::unique_lock<std::shared_mutex> lock(m_mutex);
+
+            // Locate the chat by its name.
+            auto chatIt = std::find_if(m_chats.begin(), m_chats.end(),
+                [&chatName](const auto& chat) { return chat.name == chatName; });
+
+            if (chatIt != m_chats.end()) {
+                // Check if the index is valid.
+                if (index >= 0 && index < static_cast<int>(chatIt->messages.size())) {
+                    // Remove the message at the given index.
+                    chatIt->messages.erase(chatIt->messages.begin() + index);
+                    // Update the last modified timestamp.
+                    chatIt->lastModified = static_cast<int>(std::time(nullptr));
+                }
+                else {
+                    std::cerr << "[ChatManager] Invalid message index (" << index << ") for chat: " << chatName << "\n";
+                }
+            }
+            else {
+                std::cerr << "[ChatManager] Chat not found: " << chatName << "\n";
+            }
         }
 
         void addMessage(const std::string& chatName, const Message& message) 
@@ -336,6 +385,37 @@ namespace Chat
             {
                 it->messages.push_back(message);
                 it->lastModified = static_cast<int>(std::time(nullptr));
+            }
+        }
+
+        void setMessageModelName(const std::string& chatName, const int& _index, const std::string& modelName)
+        {
+            std::unique_lock<std::shared_mutex> lock(m_mutex);
+            auto it = std::find_if(m_chats.begin(), m_chats.end(),
+                [&chatName](const auto& chat) { return chat.name == chatName; });
+
+			int index = _index;
+
+            if (_index == -1)
+            {
+				index = it->messages.size() - 1;
+            }
+
+            if (it != m_chats.end())
+            {
+                if (index >= 0 && index < static_cast<int>(it->messages.size()))
+                {
+                    it->messages[index].modelName = modelName;
+                    it->lastModified = static_cast<int>(std::time(nullptr));
+                }
+                else
+                {
+                    std::cerr << "[ChatManager] Invalid message index (" << index << ") for chat: " << chatName << "\n";
+                }
+            }
+            else
+            {
+                std::cerr << "[ChatManager] Chat not found: " << chatName << "\n";
             }
         }
 
@@ -489,7 +569,7 @@ namespace Chat
 				return std::nullopt;
 			}
 
-			return m_persistence->getKvChatPath(m_chats[m_currentChatIndex].name + modelName + modelVariant);
+			return m_persistence->getKvChatPath(m_chats[m_currentChatIndex].name + "@" + modelName + modelVariant);
 		}
 
 		static const std::string getDefaultChatName() { return DEFAULT_CHAT_NAME; }
