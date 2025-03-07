@@ -124,6 +124,7 @@ target_include_directories(kolosal_lib PUBLIC
     ${EXTERNAL_DIR}/imspinner
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/assets
+    ${CMAKE_SOURCE_DIR}/kolosal-server/include
     ${CURL_INCLUDE_DIR}
 )
 
@@ -165,6 +166,9 @@ else()
     )
 endif()
 
+# ==== Kolosal Server Shared Library ====
+add_subdirectory(${CMAKE_SOURCE_DIR}/kolosal-server)
+
 # ==== Main Executable ====
 if (DEBUG)
     add_executable(KolosalDesktop
@@ -178,7 +182,11 @@ else()
     )
 endif()
 
-target_link_libraries(KolosalDesktop PRIVATE kolosal_lib)
+# Link both the engine (kolosal_lib) and the Kolosal server shared library.
+target_link_libraries(KolosalDesktop PRIVATE 
+    kolosal_lib
+    kolosal_server
+)
 
 # ==== Post-Build Commands ====
 # Copy fonts
@@ -217,6 +225,15 @@ add_custom_command(
     TARGET KolosalDesktop POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
     "${EXTERNAL_DIR}/curl/bin" "$<TARGET_FILE_DIR:KolosalDesktop>"
+)
+
+# Copy Kolosal Server DLL
+add_custom_command(
+    TARGET KolosalDesktop POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "$<TARGET_FILE:kolosal_server>"
+        "$<TARGET_FILE_DIR:KolosalDesktop>"
+    COMMENT "Copying Kolosal Server DLL to output directory"
 )
 
 # Copy Inference Engine DLLs
