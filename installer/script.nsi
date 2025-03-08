@@ -120,6 +120,8 @@ Section "Kolosal AI" SecKolosalAI
   File "libcrypto-3-x64.dll"
   File "libssl-3-x64.dll"
   File "libcurl.dll"
+  FILE "kolosal_server.dll"
+  FILE "vcomp140.dll"
   File "LICENSE"
 
   ; Create and populate subdirectories
