@@ -16,21 +16,21 @@ stream = client.chat.completions.create(
         {"role": "system", "content": "You are a helpful assistant."},
         {"role": "user", "content": "Why anything to the power of zero is 1?"}
     ],
-    stream=False
+    stream=True
 )
 
 # Process the full_response
-print("Full response:")
-print(stream.choices[0].message.content)
+# print("Full response:")
+# print(stream.choices[0].message.content)
 
 # Process streaming response
-# print("Streaming response:")
-# full_response = ""
-# for chunk in stream:
-#     if chunk.choices[0].delta.content is not None:
-#         content = chunk.choices[0].delta.content
-#         full_response += content
-#         print(content, end="", flush=True)
+print("Streaming response:")
+full_response = ""
+for chunk in stream:
+    if chunk.choices[0].delta.content is not None:
+        content = chunk.choices[0].delta.content
+        full_response += content
+        print(content, end="", flush=True)
 
-# print("\n\nFull response:", full_response)
+print("\n\nFull response:", full_response)
 
