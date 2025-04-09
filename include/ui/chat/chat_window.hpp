@@ -5,7 +5,7 @@
 #include "chat_history.hpp"
 #include "ui/widgets.hpp"
 #include "ui/markdown.hpp"
-#include "ui/chat/model_manager_modal.hpp"
+#include "ui/model_manager_modal.hpp"
 #include "chat/chat_manager.hpp"
 #include "model/preset_manager.hpp"
 #include "model/model_manager.hpp"
@@ -187,14 +187,17 @@ public:
         sendButtonConfig.tooltip = "Send Message";
 
         inputPlaceholderText = "Type a message and press Enter to send (Ctrl+Enter or Shift+Enter for new line)";
+
+        // Initialize auto-scroll state
+        m_shouldAutoScroll = true;
+        m_wasAtBottom = true;
+        m_lastContentHeight = 0.0f;
     }
 
-    // Render the chat window. This method computes layout values and then renders
-    // the cached widgets, updating only the dynamic properties.
     void render(float leftSidebarWidth, float rightSidebarWidth) {
         ImGuiIO& io = ImGui::GetIO();
         ImVec2 windowSize = ImVec2(io.DisplaySize.x - rightSidebarWidth - leftSidebarWidth,
-            io.DisplaySize.y - Config::TITLE_BAR_HEIGHT);
+            io.DisplaySize.y - Config::TITLE_BAR_HEIGHT - Config::FOOTER_HEIGHT);
 
         ImGui::SetNextWindowPos(ImVec2(leftSidebarWidth, Config::TITLE_BAR_HEIGHT), ImGuiCond_Always);
         ImGui::SetNextWindowSize(windowSize, ImGuiCond_Always);
@@ -221,22 +224,16 @@ public:
         // Render the clear chat modal.
         clearChatModal.render();
 
-		// Render the rename chat modal.
+        // Render the rename chat modal.
         renameChatModal.render();
 
         // Spacing between widgets.
         for (int i = 0; i < 4; ++i)
             ImGui::Spacing();
 
-        if (paddingX > 0.0F)
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + paddingX);
-
         // Render the chat history region.
         float availableHeight = ImGui::GetContentRegionAvail().y - m_inputHeight - Config::BOTTOM_MARGIN;
-        ImGui::BeginChild("ChatHistoryRegion", ImVec2(contentWidth, availableHeight), false, ImGuiWindowFlags_NoScrollbar);
-        if (auto chat = Chat::ChatManager::getInstance().getCurrentChat())
-            chatHistoryRenderer.render(*chat, contentWidth);
-        ImGui::EndChild();
+        renderChatHistoryWithAutoScroll(contentWidth, availableHeight, paddingX);
 
         ImGui::Spacing();
         float inputFieldPaddingX = (availableWidth - contentWidth) / 2.0F;
@@ -249,6 +246,53 @@ public:
     }
 
 private:
+    void renderChatHistoryWithAutoScroll(float contentWidth, float availableHeight, float paddingX) {
+        const char* chatHistoryId = "ChatHistoryRegion";
+
+        // Begin the child window for chat history
+        ImGui::PushStyleColor(ImGuiCol_ScrollbarBg, ImVec4(0, 0, 0, 0));
+        ImGui::BeginChild(chatHistoryId, ImVec2(-1, availableHeight), false);
+		ImGui::PopStyleColor();
+
+        // Check if we were at the bottom before rendering new content
+        float scrollY = ImGui::GetScrollY();
+        float maxScrollY = ImGui::GetScrollMaxY();
+        m_wasAtBottom = (maxScrollY <= 0.0f) || (scrollY >= maxScrollY - 1.0f);
+
+        // Render the chat content
+        if (auto chat = Chat::ChatManager::getInstance().getCurrentChat())
+        {
+            chatHistoryRenderer.render(*chat, contentWidth, paddingX);
+        }
+
+        // Calculate if content height has changed (new content was added)
+        float currentMaxScrollY = ImGui::GetScrollMaxY();
+        bool contentHeightChanged = currentMaxScrollY != m_lastContentHeight;
+        m_lastContentHeight = currentMaxScrollY;
+
+        if (ImGui::IsMouseDragging(ImGuiMouseButton_Left) || ImGui::GetIO().MouseWheel != 0) {
+            // User is actively scrolling, check if they're at the bottom
+            float newScrollY = ImGui::GetScrollY();
+            float newMaxScrollY = ImGui::GetScrollMaxY();
+            bool nowAtBottom = (newMaxScrollY <= 0.0f) || (newScrollY >= newMaxScrollY - 1.0f);
+
+            // Update auto-scroll state based on whether user is at bottom
+            m_shouldAutoScroll = nowAtBottom;
+        }
+
+        bool shouldScrollToBottom = m_shouldAutoScroll && (m_wasAtBottom || contentHeightChanged);
+
+        // Check if we're generating content
+        bool isGenerating = Model::ModelManager::getInstance().isCurrentlyGenerating();
+
+        // Force scroll to bottom if generating and should auto-scroll
+        if (shouldScrollToBottom || (isGenerating && m_shouldAutoScroll)) {
+            ImGui::SetScrollHereY(1.0f); // 1.0f means align to bottom
+        }
+
+        ImGui::EndChild();
+    }
+
     static void chatStreamingCallback(const std::string& partialOutput, const float tps, const int jobId, const bool isFinished) {
         auto& chatManager = Chat::ChatManager::getInstance();
         auto& modelManager = Model::ModelManager::getInstance();
@@ -305,7 +349,7 @@ private:
             auto& chatManager = Chat::ChatManager::getInstance();
 
             // Generate the title (synchronous call)
-            CompletionResult titleResult = modelManager.chatCompleteSync(titleParams, false);
+            CompletionResult titleResult = modelManager.chatCompleteSync(titleParams, modelManager.getCurrentModelName().value(), false);
 
             if (!titleResult.text.empty()) {
                 // Clean up the generated title
@@ -321,6 +365,23 @@ private:
                         s.erase(pos, titlePrefix.length());
                     }
 
+					// Remove any thinking tags (e.g., <think>...</think>)
+                    const std::string thinkStart = "<think>";
+                    const std::string thinkEnd = "</think>";
+                    size_t startPos = s.find(thinkStart);
+                    while (startPos != std::string::npos) {
+                        size_t endPos = s.find(thinkEnd, startPos + thinkStart.length());
+                        if (endPos != std::string::npos) {
+                            s.erase(startPos, endPos + thinkEnd.length() - startPos);
+                        }
+                        else {
+                            // If no matching end tag, remove from start tag to end of string
+                            s.erase(startPos);
+                            break;
+                        }
+                        startPos = s.find(thinkStart, startPos);
+                    }
+
                     // Trim whitespace
                     s.erase(0, s.find_first_not_of(" \t\n\r"));
                     if (!s.empty()) {
@@ -334,7 +395,7 @@ private:
                 if (!newTitle.empty()) {
                     if (!chatManager.renameCurrentChat(newTitle).get())
                     {
-						std::cerr << "[ChatSection] Failed to rename chat to: " << newTitle << "\n";
+                        std::cerr << "[ChatSection] Failed to rename chat to: " << newTitle << "\n";
                     }
                 }
             }
@@ -343,13 +404,13 @@ private:
 
     // Render the row of buttons that allow the user to switch models or clear chat.
     void renderChatFeatureButtons(float baseX, float baseY) {
-		Model::ModelManager& modelManager = Model::ModelManager::getInstance();
+        Model::ModelManager& modelManager = Model::ModelManager::getInstance();
 
         // Update the open-model manager button’s label dynamically.
         openModelManagerConfig.label =
             modelManager.getCurrentModelName().value_or("Select Model");
-		openModelManagerConfig.tooltip =
-			modelManager.getCurrentModelName().value_or("Select Model");
+        openModelManagerConfig.tooltip =
+            modelManager.getCurrentModelName().value_or("Select Model");
 
         if (modelManager.isLoadInProgress())
         {
@@ -358,7 +419,7 @@ private:
 
         if (modelManager.isModelLoaded())
         {
-			openModelManagerConfig.icon = ICON_CI_SPARKLE_FILLED;
+            openModelManagerConfig.icon = ICON_CI_SPARKLE_FILLED;
         }
 
         std::vector<ButtonConfig> buttons = { openModelManagerConfig, clearChatButtonConfig };
@@ -398,12 +459,16 @@ private:
             buildChatCompletionParameters(currentChat, message);
 
         auto& modelManager = Model::ModelManager::getInstance();
-        int jobId = modelManager.startChatCompletionJob(completionParams, chatStreamingCallback);
+        int jobId = modelManager.startChatCompletionJob(completionParams, chatStreamingCallback,
+            modelManager.getCurrentModelName().value());
         if (!chatManager.setCurrentJobId(jobId)) {
             std::cerr << "[ChatSection] Failed to set the current job ID.\n";
         }
 
         modelManager.setModelGenerationInProgress(true);
+
+        // Ensure auto-scroll is enabled when starting a new generation
+        m_shouldAutoScroll = true;
 
         // If this is the first message, generate a title for the chat
         if (isFirstMessage) {
@@ -462,20 +527,21 @@ private:
             sendButtonConfig.tooltip = "Stop generation";
             sendButtonConfig.onClick = []() {
                 Model::ModelManager::getInstance().stopJob(
-                    Chat::ChatManager::getInstance().getCurrentJobId()
+                    Chat::ChatManager::getInstance().getCurrentJobId(),
+					Model::ModelManager::getInstance().getCurrentModelName().value()
                 );
                 };
             sendButtonConfig.state = ButtonState::NORMAL;
         }
 
-		// Disable the send button and input processing if no model is loaded.
-		if (!modelManager.isModelLoaded()) {
+        // Disable the send button and input processing if no model is loaded.
+        if (!modelManager.isModelLoaded()) {
             inputConfig.flags = ImGuiInputTextFlags_CtrlEnterForNewLine |
                 ImGuiInputTextFlags_ShiftEnterForNewLine;
             inputConfig.processInput = nullptr;
 
-			sendButtonConfig.state = ButtonState::DISABLED;
-		}
+            sendButtonConfig.state = ButtonState::DISABLED;
+        }
     }
 
     void drawInputFieldBackground(const float width, const float height) {
@@ -532,6 +598,11 @@ private:
     std::string inputTextBuffer = std::string(Config::InputField::TEXT_SIZE, '\0');
     bool focusInputField = true;
     float m_inputHeight = Config::INPUT_HEIGHT;
+
+    // Auto-scroll state variables
+    bool m_shouldAutoScroll;
+    bool m_wasAtBottom;
+    float m_lastContentHeight;
 
     // Child components.
     ModelManagerModal modelManagerModal;

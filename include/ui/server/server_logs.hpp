@@ -2,7 +2,7 @@
 
 #include "imgui.h"
 #include "ui/widgets.hpp"
-#include "ui/chat/model_manager_modal.hpp"
+#include "ui/model_manager_modal.hpp"
 #include "model/model_manager.hpp"
 #include "model/server_state_manager.hpp"
 
@@ -33,7 +33,7 @@ public:
 
         ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, 0.0F);
         ImGui::SetNextWindowPos(ImVec2(0, Config::TITLE_BAR_HEIGHT), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x - sidebarWidth, io.DisplaySize.y - Config::TITLE_BAR_HEIGHT), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x - sidebarWidth, io.DisplaySize.y - Config::TITLE_BAR_HEIGHT - Config::FOOTER_HEIGHT), ImGuiCond_Always);
         ImGui::Begin("Server Logs", nullptr, window_flags);
         ImGui::PopStyleVar();
 
@@ -143,7 +143,7 @@ public:
                 Button::render(copyButtonConfig);
             }
 
-            m_modelManagerModal.render(m_modelManagerModalOpen);
+            m_modelManagerModal.render(m_modelManagerModalOpen, false);
         }
 
         ImGui::SetCursorPosY(ImGui::GetCursorPosY() + 12);

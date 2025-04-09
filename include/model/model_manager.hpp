@@ -1,8 +1,10 @@
 #pragma once
 
+#include "system_monitor.hpp"
 #include "preset_manager.hpp"
 #include "model_persistence.hpp"
 #include "model_loader_config_manager.hpp"
+#include "threadpool.hpp"
 
 #include <kolosal_server.hpp>
 #include <types.h>
@@ -33,6 +35,8 @@ namespace Model
 {
     static std::atomic<int> seqCounter;
 
+    // TODO: Instead of using singleton, i'm thinking of approaching it using a C style implementation
+	//       to avoid the overhead of singleton pattern, and to make it more readable and maintainable.
     class ModelManager
     {
     public:
@@ -55,30 +59,31 @@ namespace Model
             m_currentModelIndex = 0;
         }
 
-        bool unloadModel()
+        bool unloadModel(const std::string modelName)
         {
 			std::unique_lock<std::shared_mutex> lock(m_mutex);
 
-            if (!m_modelLoaded)
-            {
-                return false;
-            }
+			if (!m_unloadInProgress.empty())
+			{
+				std::cerr << "[ModelManager] Unload already in progress\n";
+				return false;
+			}
 
-			if (!m_inferenceEngine)
+			if (!m_inferenceEngines.at(modelName))
 			{
 				return false;
 			}
 
-			m_unloadInProgress = true;
+			m_unloadInProgress = modelName;
 
 			lock.unlock();
 
 			// Start async unloading process
-			auto unloadFuture = unloadModelAsync();
+			auto unloadFuture = unloadModelAsync(modelName);
 
 			// Handle unload completion
             m_unloadFutures.emplace_back(std::async(std::launch::async,
-                [this, unloadFuture = std::move(unloadFuture)]() mutable {
+                [this, unloadFuture = std::move(unloadFuture), modelName]() mutable {
 					if (unloadFuture.get())
 					{
 						std::cout << "[ModelManager] Successfully unloaded model\n";
@@ -90,9 +95,13 @@ namespace Model
 
                     {
                         std::unique_lock<std::shared_mutex> lock(m_mutex);
-                        m_modelLoaded = false;
-                        m_unloadInProgress = false;
-                        resetModelState();
+                        m_unloadInProgress = "";
+
+						if (modelName == m_currentModelName)
+						{
+                            m_modelLoaded = false;
+                            resetModelState();
+						}
                     }
                 }));
         }
@@ -124,27 +133,23 @@ namespace Model
                 return true;
             }
 
-            // Handle already downloaded case
-            variant->lastSelected = static_cast<int>(std::time(nullptr));
-            m_persistence->saveModelData(m_models[m_currentModelIndex]);
-
             // Prevent concurrent model loading
-            if (m_loadInProgress) {
+            if (!m_loadInProgress.empty()) {
                 std::cerr << "[ModelManager] Already loading a model, cannot switch now\n";
                 return false;
             }
 
-            m_loadInProgress = true;
-            
+            m_loadInProgress = modelName;
+
             // Release lock before async operations
             lock.unlock();
 
             // Start async loading process
-            auto loadFuture = loadModelIntoEngineAsync();
-            
+            auto loadFuture = loadModelIntoEngineAsync(modelName);
+
             // Handle load completion
             m_loadFutures.emplace_back(std::async(std::launch::async,
-                [this, loadFuture = std::move(loadFuture)]() mutable {
+                [this, modelName, loadFuture = std::move(loadFuture), variant]() mutable {
                     bool success = false;
                     try {
                         success = loadFuture.get();
@@ -155,13 +160,17 @@ namespace Model
 
                     {
                         std::unique_lock<std::shared_mutex> lock(m_mutex);
-                        m_loadInProgress = false;
+                        m_loadInProgress = "";
 
                         if (success) {
                             m_modelLoaded = true;
                             std::cout << "[ModelManager] Successfully switched models\n";
+                            variant->lastSelected = static_cast<int>(std::time(nullptr));
+                            m_persistence->saveModelData(m_models[m_currentModelIndex]);
                         }
                         else {
+                            // Clean up the failed engine
+                            cleanupFailedEngine(modelName);
                             resetModelState();
                             std::cerr << "[ModelManager] Failed to load model\n";
                         }
@@ -179,6 +188,54 @@ namespace Model
 
             return true;
         }
+
+		bool loadModelIntoEngine(const std::string& modelName)
+		{
+			std::unique_lock<std::shared_mutex> lock(m_mutex);
+			// Prevent concurrent model loading
+			if (!m_loadInProgress.empty()) {
+				std::cerr << "[ModelManager] Already loading a model, cannot load now\n";
+				return false;
+			}
+			m_loadInProgress = modelName;
+			// Release lock before async operations
+			lock.unlock();
+			// Start async loading process
+			auto loadFuture = loadModelIntoEngineAsync(modelName);
+			// Handle load completion
+			m_loadFutures.emplace_back(std::async(std::launch::async,
+				[this, modelName, loadFuture = std::move(loadFuture)]() mutable {
+					bool success = false;
+					try {
+						success = loadFuture.get();
+					}
+					catch (const std::exception& e) {
+						std::cerr << "[ModelManager] Model load error: " << e.what() << "\n";
+					}
+					{
+						std::unique_lock<std::shared_mutex> lock(m_mutex);
+						m_loadInProgress = "";
+						if (success) {
+							m_modelLoaded = true;
+							std::cout << "[ModelManager] Successfully loaded model\n";
+						}
+						else {
+							// Clean up the failed engine
+							cleanupFailedEngine(modelName);
+							std::cerr << "[ModelManager] Failed to load model\n";
+						}
+					}
+					// Cleanup completed futures
+					m_loadFutures.erase(
+						std::remove_if(m_loadFutures.begin(), m_loadFutures.end(),
+							[](const std::future<void>& f) {
+								return f.wait_for(std::chrono::seconds(0)) == std::future_status::ready;
+							}),
+						m_loadFutures.end()
+					);
+				}));
+			return true;
+		}
 
         bool downloadModel(size_t modelIndex, const std::string &variantType)
         {
@@ -296,6 +353,52 @@ namespace Model
             return params;
         }
 
+        CompletionParameters buildCompletionParameters(const CompletionRequest& request) {
+            CompletionParameters params;
+
+            // Set prompt based on request format
+            if (std::holds_alternative<std::string>(request.prompt)) {
+                params.prompt = std::get<std::string>(request.prompt);
+            }
+            else if (std::holds_alternative<std::vector<std::string>>(request.prompt)) {
+                // Join multiple prompts with newlines if array is provided
+                const auto& prompts = std::get<std::vector<std::string>>(request.prompt);
+                std::ostringstream joined;
+                for (size_t i = 0; i < prompts.size(); ++i) {
+                    joined << prompts[i];
+                    if (i < prompts.size() - 1) {
+                        joined << "\n";
+                    }
+                }
+                params.prompt = joined.str();
+            }
+
+            // Map parameters from request to our format
+            if (request.seed.has_value()) {
+                params.randomSeed = request.seed.value();
+            }
+
+            if (request.max_tokens.has_value()) {
+                params.maxNewTokens = request.max_tokens.value();
+            }
+            else {
+                // Use a reasonable default if not specified (OpenAI default is 16)
+                params.maxNewTokens = 16;
+            }
+
+            // Copy other parameters
+            params.temperature = request.temperature;
+            params.topP = request.top_p;
+            params.streaming = request.stream;
+
+            // Set unique sequence ID based on timestamp
+            auto now = std::chrono::system_clock::now();
+            auto timestamp = std::chrono::duration_cast<std::chrono::seconds>(now.time_since_epoch()).count();
+            params.seqId = static_cast<int>(timestamp * 1000 + seqCounter++);
+
+            return params;
+        }
+
         ChatCompletionParameters buildChatCompletionParameters(
             const Chat::ChatHistory& currentChat,
             const std::string& userInput
@@ -386,133 +489,136 @@ namespace Model
             return completionParams;
         }
 
-        bool stopJob(int jobId)
+        bool stopJob(int jobId, const std::string modelName)
         {
             std::shared_lock<std::shared_mutex> lock(m_mutex);
-            if (!m_inferenceEngine)
+            if (!m_inferenceEngines.at(modelName))
             {
                 std::cerr << "[ModelManager] Inference engine is not initialized.\n";
                 return false;
             }
-            m_inferenceEngine->stopJob(jobId);
+
+            // Mark the job as inactive in our tracking map
+            {
+                auto it = m_activeJobs.find(jobId);
+                if (it != m_activeJobs.end()) {
+                    it->second = false;
+                }
+            }
+
+            m_inferenceEngines.at(modelName)->stopJob(jobId);
             return true;
         }
 
-        CompletionResult completeSync(const CompletionParameters& params)
+        CompletionResult completeSync(const CompletionParameters& params, const std::string modelName)
         {
+            CompletionResult emptyResult;
+			emptyResult.text = "";
+			emptyResult.tps = 0.0F;
+
             {
                 std::shared_lock<std::shared_mutex> lock(m_mutex);
-                if (!m_inferenceEngine)
+                if (!m_inferenceEngines.at(modelName))
                 {
                     std::cerr << "[ModelManager] Inference engine is not initialized.\n";
-                    CompletionResult result;
-                    result.text = "";
-                    result.tps = 0.0F;
-                    return result;
+                    return emptyResult;
                 }
                 if (!m_modelLoaded)
                 {
                     std::cerr << "[ModelManager] No model is currently loaded.\n";
-                    CompletionResult result;
-                    result.text = "";
-                    result.tps = 0.0F;
-                    return result;
+                    return emptyResult;
                 }
             }
 
-            int jobId = m_inferenceEngine->submitCompletionsJob(params);
+            int jobId = m_inferenceEngines.at(modelName)->submitCompletionsJob(params);
             if (jobId < 0) {
                 std::cerr << "[ModelManager] Failed to submit completions job.\n";
-                CompletionResult result;
-                result.text = "";
-                result.tps = 0.0F;
-                return result;
+                return emptyResult;
             }
 
             // Add job ID with proper synchronization
             {
                 std::unique_lock<std::shared_mutex> lock(m_mutex);
                 m_jobIds.push_back(jobId);
+                m_activeJobs[jobId] = true;
             }
 
             // Wait for the job to complete
-            m_inferenceEngine->waitForJob(jobId);
+            m_inferenceEngines.at(modelName)->waitForJob(jobId);
 
             // Get the final result
-            CompletionResult result = m_inferenceEngine->getJobResult(jobId);
+            CompletionResult result = m_inferenceEngines.at(modelName)->getJobResult(jobId);
 
             // Check for errors
-            if (m_inferenceEngine->hasJobError(jobId)) {
+            if (m_inferenceEngines.at(modelName)->hasJobError(jobId)) {
                 std::cerr << "[ModelManager] Error in completion job: "
-                    << m_inferenceEngine->getJobError(jobId) << std::endl;
+                    << m_inferenceEngines.at(modelName)->getJobError(jobId) << std::endl;
             }
 
             // Clean up with proper synchronization
             {
                 std::unique_lock<std::shared_mutex> lock(m_mutex);
                 m_jobIds.erase(std::remove(m_jobIds.begin(), m_jobIds.end(), jobId), m_jobIds.end());
+                m_activeJobs.erase(jobId);
             }
 
             return result;
         }
 
-        CompletionResult chatCompleteSync(const ChatCompletionParameters& params, const bool saveChat = true)
+        CompletionResult chatCompleteSync(const ChatCompletionParameters& params, const std::string modelName, const bool saveChat = true)
         {
+            CompletionResult emptyResult;
+			emptyResult.text = "";
+			emptyResult.tps = 0.0F;
+
             {
                 std::shared_lock<std::shared_mutex> lock(m_mutex);
-                if (!m_inferenceEngine)
+                if (!m_inferenceEngines.at(modelName))
                 {
                     std::cerr << "[ModelManager] Inference engine is not initialized.\n";
-                    CompletionResult result;
-                    result.text = "";
-                    result.tps = 0.0F;
-                    return result;
+                    return emptyResult;
                 }
                 if (!m_modelLoaded)
                 {
                     std::cerr << "[ModelManager] No model is currently loaded.\n";
-                    CompletionResult result;
-                    result.text = "";
-                    result.tps = 0.0F;
-                    return result;
+                    return emptyResult;
                 }
             }
 
-            int jobId = m_inferenceEngine->submitChatCompletionsJob(params);
+            int jobId = m_inferenceEngines.at(modelName)->submitChatCompletionsJob(params);
             if (jobId < 0) {
                 std::cerr << "[ModelManager] Failed to submit chat completions job.\n";
-                CompletionResult result;
-                result.text = "";
-                result.tps = 0.0F;
-                return result;
+                return emptyResult;
             }
 
             // Add job ID with proper synchronization
             {
                 std::unique_lock<std::shared_mutex> lock(m_mutex);
                 m_jobIds.push_back(jobId);
+                m_activeJobs[jobId] = true;
             }
 
             // Wait for the job to complete
-            m_inferenceEngine->waitForJob(jobId);
+            m_inferenceEngines.at(modelName)->waitForJob(jobId);
 
             // Get the final result
-            CompletionResult result = m_inferenceEngine->getJobResult(jobId);
+            CompletionResult result = m_inferenceEngines.at(modelName)->getJobResult(jobId);
 
             // Check for errors
-            if (m_inferenceEngine->hasJobError(jobId)) {
+            if (m_inferenceEngines.at(modelName)->hasJobError(jobId)) {
                 std::cerr << "[ModelManager] Error in chat completion job: "
-                    << m_inferenceEngine->getJobError(jobId) << std::endl;
+                    << m_inferenceEngines.at(modelName)->getJobError(jobId) << std::endl;
             }
 
             // Clean up with proper synchronization
             {
                 std::unique_lock<std::shared_mutex> lock(m_mutex);
                 m_jobIds.erase(std::remove(m_jobIds.begin(), m_jobIds.end(), jobId), m_jobIds.end());
+                m_activeJobs.erase(jobId);
             }
 
             // Save the chat history
-            if (saveChat) 
+            if (saveChat)
             {
                 auto& chatManager = Chat::ChatManager::getInstance();
                 auto chatName = chatManager.getChatNameByJobId(jobId);
@@ -531,11 +637,12 @@ namespace Model
             return result;
         }
 
-        int startCompletionJob(const CompletionParameters& params, std::function<void(const std::string&, const float, const int, const bool)> streamingCallback, const bool saveChat = true)
+        int startCompletionJob(const CompletionParameters& params, std::function<void(const std::string&, 
+            const float, const int, const bool)> streamingCallback, const std::string modelName, const bool saveChat = true)
         {
             {
                 std::shared_lock<std::shared_mutex> lock(m_mutex);
-                if (!m_inferenceEngine)
+                if (!m_inferenceEngines.at(modelName))
                 {
                     std::cerr << "[ModelManager] Inference engine is not initialized.\n";
                     return -1;
@@ -547,7 +654,7 @@ namespace Model
                 }
             }
 
-            int jobId = m_inferenceEngine->submitCompletionsJob(params);
+            int jobId = m_inferenceEngines.at(modelName)->submitCompletionsJob(params);
             if (jobId < 0) {
                 std::cerr << "[ModelManager] Failed to submit completions job.\n";
                 return -1;
@@ -557,16 +664,25 @@ namespace Model
             {
                 std::unique_lock<std::shared_mutex> lock(m_mutex);
                 m_jobIds.push_back(jobId);
+                m_activeJobs[jobId] = true;
             }
 
-            std::thread([this, jobId, streamingCallback, saveChat]() {
+            // Use thread pool instead of creating a detached thread
+            m_threadPool.enqueue([this, jobId, streamingCallback, saveChat, modelName]() {
                 // Poll while job is running or until the engine says it's done
                 while (true)
                 {
-                    if (this->m_inferenceEngine->hasJobError(jobId)) break;
+                    // Check if job was stopped externally
+                    {
+                        std::shared_lock<std::shared_mutex> lock(m_mutex);
+                        auto it = m_activeJobs.find(jobId);
+                        if (it == m_activeJobs.end() || !it->second) break;
+                    }
 
-                    CompletionResult partial = this->m_inferenceEngine->getJobResult(jobId);
-                    bool isFinished = this->m_inferenceEngine->isJobFinished(jobId);
+                    if (this->m_inferenceEngines.at(modelName)->hasJobError(jobId)) break;
+
+                    CompletionResult partial = this->m_inferenceEngines.at(modelName)->getJobResult(jobId);
+                    bool isFinished = this->m_inferenceEngines.at(modelName)->isJobFinished(jobId);
 
                     if (!partial.text.empty()) {
                         // Call the user's callback (no need to lock for the callback)
@@ -585,28 +701,28 @@ namespace Model
                 {
                     std::unique_lock<std::shared_mutex> lock(m_mutex);
                     m_jobIds.erase(std::remove(m_jobIds.begin(), m_jobIds.end(), jobId), m_jobIds.end());
+                    m_activeJobs.erase(jobId);
                 }
 
                 // Reset jobid tracking on chat manager
+                if (saveChat)
                 {
-                    if (saveChat)
+                    if (!Chat::ChatManager::getInstance().removeJobId(jobId))
                     {
-                        if (!Chat::ChatManager::getInstance().removeJobId(jobId))
-                        {
-                            std::cerr << "[ModelManager] Failed to remove job id from chat manager.\n";
-                        }
+                        std::cerr << "[ModelManager] Failed to remove job id from chat manager.\n";
                     }
                 }
-                }).detach();
+                });
 
             return jobId;
         }
 
-        int startChatCompletionJob(const ChatCompletionParameters& params, std::function<void(const std::string&, const float, const int, const bool)> streamingCallback, const bool saveChat = true)
+        int startChatCompletionJob(const ChatCompletionParameters& params, std::function<void(const std::string&, 
+            const float, const int, const bool)> streamingCallback, const std::string modelName, const bool saveChat = true)
         {
             {
                 std::shared_lock<std::shared_mutex> lock(m_mutex);
-                if (!m_inferenceEngine)
+                if (!m_inferenceEngines.at(modelName))
                 {
                     std::cerr << "[ModelManager] Inference engine is not initialized.\n";
                     return -1;
@@ -618,7 +734,7 @@ namespace Model
                 }
             }
 
-            int jobId = m_inferenceEngine->submitChatCompletionsJob(params);
+            int jobId = m_inferenceEngines.at(modelName)->submitChatCompletionsJob(params);
             if (jobId < 0) {
                 std::cerr << "[ModelManager] Failed to submit chat completions job.\n";
                 return -1;
@@ -628,15 +744,24 @@ namespace Model
             {
                 std::unique_lock<std::shared_mutex> lock(m_mutex);
                 m_jobIds.push_back(jobId);
+                m_activeJobs[jobId] = true;
             }
 
-            std::thread([this, jobId, streamingCallback, saveChat]() {
+            // Use thread pool instead of creating a detached thread
+            m_threadPool.enqueue([this, jobId, streamingCallback, saveChat, modelName]() {
                 while (true)
                 {
-                    if (this->m_inferenceEngine->hasJobError(jobId)) break;
+                    // Check if job was stopped externally
+                    {
+                        std::shared_lock<std::shared_mutex> lock(m_mutex);
+                        auto it = m_activeJobs.find(jobId);
+                        if (it == m_activeJobs.end() || !it->second) break;
+                    }
 
-                    CompletionResult partial = this->m_inferenceEngine->getJobResult(jobId);
-                    bool isFinished = this->m_inferenceEngine->isJobFinished(jobId);
+                    if (this->m_inferenceEngines.at(modelName)->hasJobError(jobId)) break;
+
+                    CompletionResult partial = this->m_inferenceEngines.at(modelName)->getJobResult(jobId);
+                    bool isFinished = this->m_inferenceEngines.at(modelName)->isJobFinished(jobId);
 
                     if (!partial.text.empty()) {
                         // Call the user's callback (no need to lock for the callback)
@@ -655,6 +780,7 @@ namespace Model
                 {
                     std::unique_lock<std::shared_mutex> lock(m_mutex);
                     m_jobIds.erase(std::remove(m_jobIds.begin(), m_jobIds.end(), jobId), m_jobIds.end());
+                    m_activeJobs.erase(jobId);
                 }
 
                 if (saveChat)
@@ -678,53 +804,53 @@ namespace Model
                         }
                     }
                 }
-                }).detach();
+                });
 
             return jobId;
         }
 
-        bool isJobFinished(int jobId)
+        bool isJobFinished(int jobId, const std::string modelName) const
         {
             std::shared_lock<std::shared_mutex> lock(m_mutex);
-            if (!m_inferenceEngine)
+            if (!m_inferenceEngines.at(modelName))
             {
                 std::cerr << "[ModelManager] Inference engine is not initialized.\n";
                 return true; // No engine means nothing is running
             }
-            return m_inferenceEngine->isJobFinished(jobId);
+            return m_inferenceEngines.at(modelName)->isJobFinished(jobId);
         }
 
-        CompletionResult getJobResult(int jobId)
+        CompletionResult getJobResult(int jobId, const std::string modelName) const
         {
             std::shared_lock<std::shared_mutex> lock(m_mutex);
-            if (!m_inferenceEngine)
+            if (!m_inferenceEngines.at(modelName))
             {
                 std::cerr << "[ModelManager] Inference engine is not initialized.\n";
                 return { {}, "" };
             }
-            return m_inferenceEngine->getJobResult(jobId);
+            return m_inferenceEngines.at(modelName)->getJobResult(jobId);
         }
 
-        bool hasJobError(int jobId)
+        bool hasJobError(int jobId, const std::string modelName) const
         {
             std::shared_lock<std::shared_mutex> lock(m_mutex);
-            if (!m_inferenceEngine)
+            if (!m_inferenceEngines.at(modelName))
             {
                 std::cerr << "[ModelManager] Inference engine is not initialized.\n";
                 return true;
             }
-            return m_inferenceEngine->hasJobError(jobId);
+            return m_inferenceEngines.at(modelName)->hasJobError(jobId);
         }
 
-        std::string getJobError(int jobId)
+		std::string getJobError(int jobId, const std::string modelName) const
         {
             std::shared_lock<std::shared_mutex> lock(m_mutex);
-            if (!m_inferenceEngine)
+            if (!m_inferenceEngines.at(modelName))
             {
                 std::cerr << "[ModelManager] Inference engine is not initialized.\n";
                 return "Inference engine not initialized";
             }
-            return m_inferenceEngine->getJobError(jobId);
+            return m_inferenceEngines.at(modelName)->getJobError(jobId);
         }
 
 		//--------------------------------------------------------------------------------------------
@@ -740,19 +866,35 @@ namespace Model
             Logger::instance().setLevel(LogLevel::SERVER_INFO);
             Logger::logInfo("Starting model server on port %s", port.c_str());
 
-            // Set inference callbacks
-            kolosal::ServerAPI::instance().setInferenceCallback(
+            // Set chat completion callbacks
+            kolosal::ServerAPI::instance().setChatCompletionCallback(
                 [this](const ChatCompletionRequest& request) {
-                    return this->handleNonStreamingRequest(request);
+                    return this->handleChatCompletionRequest(request);
                 }
             );
 
-            kolosal::ServerAPI::instance().setStreamingInferenceCallback(
+            kolosal::ServerAPI::instance().setChatCompletionStreamingCallback(
                 [this](const ChatCompletionRequest& request,
                     const std::string& requestId,
                     int chunkIndex,
                     ChatCompletionChunk& outputChunk) {
-                        return this->handleStreamingRequest(request, requestId, chunkIndex, outputChunk);
+                        return this->handleChatCompletionStreamingRequest(request, requestId, chunkIndex, outputChunk);
+                }
+            );
+
+            // Set completion callbacks
+            kolosal::ServerAPI::instance().setCompletionCallback(
+                [this](const CompletionRequest& request) {
+                    return this->handleCompletionRequest(request);
+                }
+            );
+
+            kolosal::ServerAPI::instance().setCompletionStreamingCallback(
+                [this](const CompletionRequest& request,
+                    const std::string& requestId,
+                    int chunkIndex,
+                    CompletionChunk& outputChunk) {
+                        return this->handleCompletionStreamingRequest(request, requestId, chunkIndex, outputChunk);
                 }
             );
 
@@ -771,7 +913,7 @@ namespace Model
             kolosal::ServerAPI::instance().shutdown();
         }
 
-        ChatCompletionResponse handleNonStreamingRequest(const ChatCompletionRequest& request) {
+        ChatCompletionResponse handleChatCompletionRequest(const ChatCompletionRequest& request) {
             // Build parameters from the incoming request.
             ChatCompletionParameters params = buildChatCompletionParameters(request);
             // (The parameters will include the messages and other fields.)
@@ -785,20 +927,40 @@ namespace Model
             return response;
         }
 
-        bool ModelManager::handleStreamingRequest(
+        CompletionResponse handleCompletionRequest(const CompletionRequest& request) {
+            // Build parameters from the incoming request
+            CompletionParameters params = buildCompletionParameters(request);
+            params.streaming = false;
+
+            // Invoke the synchronous completion method
+            CompletionResult result = completeSync(params, request.model);
+
+            // Map the engine's result to our CompletionResponse
+            CompletionResponse response = convertToCompletionResponse(request, result);
+            return response;
+        }
+
+        bool handleChatCompletionStreamingRequest(
             const ChatCompletionRequest& request,
             const std::string& requestId,
             int chunkIndex,
             ChatCompletionChunk& outputChunk) {
-            // Look up (or create) the StreamingContext for this requestId.
-            std::shared_ptr<StreamingContext> ctx;
+
+            // Check if the model name is loaded
+            if (!m_inferenceEngines.at(request.model)) {
+                Logger::logError("[ModelManager] Inference engine is not initialized.");
+                return false;
+            }
+
+            // Look up (or create) the ChatCompletionStreamingContext for this requestId.
+            std::shared_ptr<ChatCompletionStreamingContext> ctx;
             {
                 std::unique_lock<std::mutex> lock(m_streamContextsMutex);
                 auto it = m_streamingContexts.find(requestId);
                 if (it == m_streamingContexts.end()) {
                     // For the very first chunk (chunkIndex==0) we create a new context.
                     if (chunkIndex == 0) {
-                        ctx = std::make_shared<StreamingContext>();
+                        ctx = std::make_shared<ChatCompletionStreamingContext>();
                         m_streamingContexts[requestId] = ctx;
                     }
                     else {
@@ -825,7 +987,7 @@ namespace Model
                 {
                     std::lock_guard<std::mutex> lock(ctx->mtx);
                     ctx->model = request.model;
-                    ctx->jobId = m_inferenceEngine->submitChatCompletionsJob(params);
+                    ctx->jobId = m_inferenceEngines.at(request.model)->submitChatCompletionsJob(params);
                     jobId = ctx->jobId;
                 }
 
@@ -849,18 +1011,30 @@ namespace Model
                 {
                     std::unique_lock<std::shared_mutex> lock(m_mutex);
                     m_jobIds.push_back(jobId);
+                    m_activeJobs[jobId] = true;
                 }
 
-                // Launch an asynchronous thread that polls the job and accumulates new text.
-                std::thread([this, jobId, requestId, ctx]() {
+                // Use thread pool instead of detached thread
+                m_threadPool.enqueue([this, jobId, request, requestId, ctx]() {
                     std::string lastText;
                     auto startTime = std::chrono::steady_clock::now();
 
                     try {
                         while (true) {
+                            // Check if job was stopped externally
+                            {
+                                std::shared_lock<std::shared_mutex> lock(m_mutex);
+                                auto it = m_activeJobs.find(jobId);
+                                if (it == m_activeJobs.end() || !it->second) {
+                                    std::lock_guard<std::mutex> ctxLock(ctx->mtx);
+                                    ctx->finished = true;
+                                    break;
+                                }
+                            }
+
                             // Check if the job has an error
-                            if (this->m_inferenceEngine->hasJobError(jobId)) {
-                                std::string errorMsg = this->m_inferenceEngine->getJobError(jobId);
+                            if (this->m_inferenceEngines.at(request.model)->hasJobError(jobId)) {
+                                std::string errorMsg = this->m_inferenceEngines.at(request.model)->getJobError(jobId);
                                 Logger::logError("[ModelManager] Streaming job error for jobId: %d - %s",
                                     jobId, errorMsg.c_str());
                                 {
@@ -874,8 +1048,8 @@ namespace Model
                             }
 
                             // Get the current result and check if finished
-                            CompletionResult partial = this->m_inferenceEngine->getJobResult(jobId);
-                            bool isFinished = this->m_inferenceEngine->isJobFinished(jobId);
+                            CompletionResult partial = this->m_inferenceEngines.at(request.model)->getJobResult(jobId);
+                            bool isFinished = this->m_inferenceEngines.at(request.model)->isJobFinished(jobId);
 
                             // Compute delta text (only new text since last poll).
                             std::string newText;
@@ -909,6 +1083,9 @@ namespace Model
                                 ctx->cv.notify_all();
                                 break;
                             }
+
+                            // Sleep briefly to avoid busy-waiting
+                            std::this_thread::sleep_for(std::chrono::milliseconds(100));
                         }
                     }
                     catch (const std::exception& e) {
@@ -928,10 +1105,9 @@ namespace Model
                         this->m_jobIds.erase(
                             std::remove(this->m_jobIds.begin(), this->m_jobIds.end(), jobId),
                             this->m_jobIds.end());
+                        m_activeJobs.erase(jobId);
                     }
-
-                    // We don't erase the streaming context here - that happens when the last chunk is requested
-                    }).detach();
+                    });
             }
 
             if (chunkIndex == 0) {
@@ -1039,6 +1215,261 @@ namespace Model
             }
         }
 
+        bool handleCompletionStreamingRequest(
+            const CompletionRequest& request,
+            const std::string& requestId,
+            int chunkIndex,
+            CompletionChunk& outputChunk) {
+
+            // Get or create streaming context
+            std::shared_ptr<CompletionStreamingContext> ctx;
+            {
+                std::unique_lock<std::mutex> lock(m_completionStreamContextsMutex);
+                auto it = m_completionStreamingContexts.find(requestId);
+                if (it == m_completionStreamingContexts.end()) {
+                    // For first chunk, create a new context
+                    if (chunkIndex == 0) {
+                        ctx = std::make_shared<CompletionStreamingContext>();
+                        m_completionStreamingContexts[requestId] = ctx;
+                    }
+                    else {
+                        Logger::logError("[ModelManager] Completion streaming context not found for requestId: %s",
+                            requestId.c_str());
+                        return false;
+                    }
+                }
+                else {
+                    ctx = it->second;
+                }
+            }
+
+            // If this is the first call, start the asynchronous job
+            if (chunkIndex == 0) {
+                // Build parameters with streaming enabled
+                CompletionParameters params = buildCompletionParameters(request);
+                params.streaming = true;
+
+                // Track job ID and model for this request
+                int jobId = -1;
+
+                {
+                    std::lock_guard<std::mutex> lock(ctx->mtx);
+                    ctx->model = request.model;
+
+                    // Submit the completion job to the inference engine
+                    jobId = m_inferenceEngines.at(request.model)->submitCompletionsJob(params);
+                    ctx->jobId = jobId;
+                }
+
+                if (jobId < 0) {
+                    Logger::logError("[ModelManager] Failed to submit completion job for requestId: %s",
+                        requestId.c_str());
+                    {
+                        std::lock_guard<std::mutex> lock(ctx->mtx);
+                        ctx->error = true;
+                        ctx->errorMessage = "Failed to start completion job";
+                        ctx->finished = true;
+                    }
+                    {
+                        std::unique_lock<std::mutex> lock(m_completionStreamContextsMutex);
+                        m_completionStreamingContexts.erase(requestId);
+                    }
+                    return false;
+                }
+
+                // Add job ID to global tracking
+                {
+                    std::unique_lock<std::shared_mutex> lock(m_mutex);
+                    m_jobIds.push_back(jobId);
+                    m_activeJobs[jobId] = true;
+                }
+
+                // Use thread pool instead of detached thread
+                m_threadPool.enqueue([this, jobId, request, requestId, ctx]() {
+                    std::string lastText;
+                    auto startTime = std::chrono::steady_clock::now();
+
+                    try {
+                        while (true) {
+                            // Check if job was stopped externally
+                            {
+                                std::shared_lock<std::shared_mutex> lock(m_mutex);
+                                auto it = m_activeJobs.find(jobId);
+                                if (it == m_activeJobs.end() || !it->second) {
+                                    std::lock_guard<std::mutex> ctxLock(ctx->mtx);
+                                    ctx->finished = true;
+                                    break;
+                                }
+                            }
+
+                            // Check if the job has an error
+                            if (this->m_inferenceEngines.at(request.model)->hasJobError(jobId)) {
+                                std::string errorMsg = this->m_inferenceEngines.at(request.model)->getJobError(jobId);
+                                Logger::logError("[ModelManager] Streaming completion job error for jobId: %d - %s",
+                                    jobId, errorMsg.c_str());
+                                {
+                                    std::lock_guard<std::mutex> lock(ctx->mtx);
+                                    ctx->error = true;
+                                    ctx->errorMessage = errorMsg;
+                                    ctx->finished = true;
+                                }
+                                ctx->cv.notify_all();
+                                break;
+                            }
+
+                            // Get the current result and check if finished
+                            CompletionResult partial = this->m_inferenceEngines.at(request.model)->getJobResult(jobId);
+                            bool isFinished = this->m_inferenceEngines.at(request.model)->isJobFinished(jobId);
+
+                            // Compute delta text (only new text since last poll)
+                            std::string newText;
+                            if (partial.text.size() > lastText.size()) {
+                                newText = partial.text.substr(lastText.size());
+                                lastText = partial.text;
+                            }
+
+                            // If we have new text, add it to the chunks
+                            if (!newText.empty()) {
+                                {
+                                    std::lock_guard<std::mutex> lock(ctx->mtx);
+                                    ctx->fullText = lastText;
+                                    ctx->chunks.push_back(newText);
+                                }
+                                ctx->cv.notify_all();
+                            }
+
+                            // If the job is finished, set the finished flag and break
+                            if (isFinished) {
+                                auto endTime = std::chrono::steady_clock::now();
+                                auto durationMs = std::chrono::duration_cast<std::chrono::milliseconds>(
+                                    endTime - startTime).count();
+
+                                Logger::logInfo("[ModelManager] Streaming completion job %d completed in %lld ms",
+                                    jobId, durationMs);
+
+                                {
+                                    std::lock_guard<std::mutex> lock(ctx->mtx);
+                                    ctx->finished = true;
+                                }
+                                ctx->cv.notify_all();
+                                break;
+                            }
+
+                            // Sleep briefly to avoid busy-waiting
+                            std::this_thread::sleep_for(std::chrono::milliseconds(100));
+                        }
+                    }
+                    catch (const std::exception& e) {
+                        Logger::logError("[ModelManager] Exception in completion streaming thread: %s", e.what());
+                        {
+                            std::lock_guard<std::mutex> lock(ctx->mtx);
+                            ctx->error = true;
+                            ctx->errorMessage = e.what();
+                            ctx->finished = true;
+                        }
+                        ctx->cv.notify_all();
+                    }
+
+                    // Clean up job ID tracking
+                    {
+                        std::unique_lock<std::shared_mutex> lock(this->m_mutex);
+                        this->m_jobIds.erase(
+                            std::remove(this->m_jobIds.begin(), this->m_jobIds.end(), jobId),
+                            this->m_jobIds.end());
+                        m_activeJobs.erase(jobId);
+                    }
+                    });
+            }
+
+            // Prepare the chunk response
+            outputChunk.id = requestId;
+            outputChunk.model = request.model;
+            outputChunk.created = static_cast<int64_t>(std::time(nullptr));
+            outputChunk.choices.clear();
+
+            // For first chunk, just create an empty choice
+            if (chunkIndex == 0) {
+                CompletionChunkChoice choice;
+                choice.index = 0;
+                choice.text = "";
+                choice.finish_reason = ""; // Use empty string instead of nullptr
+                outputChunk.choices.push_back(choice);
+                return true;
+            }
+            // For subsequent chunks, wait for content
+            else {
+                std::unique_lock<std::mutex> lock(ctx->mtx);
+
+                // Wait with timeout for the chunk to be available
+                bool result = ctx->cv.wait_for(lock, std::chrono::seconds(30), [ctx, chunkIndex]() {
+                    return (ctx->chunks.size() >= static_cast<size_t>(chunkIndex)) ||
+                        ctx->finished || ctx->error;
+                    });
+
+                if (!result) {
+                    // Timeout occurred
+                    Logger::logError("[ModelManager] Timeout waiting for completion chunk %d for requestId %s",
+                        chunkIndex, requestId.c_str());
+
+                    // Keep the lock when we check if this is the last message
+                    std::unique_lock<std::mutex> glock(m_completionStreamContextsMutex);
+                    m_completionStreamingContexts.erase(requestId);
+                    return false;
+                }
+
+                // Handle errors - still holding the lock
+                if (ctx->error) {
+                    Logger::logError("[ModelManager] Error in streaming completion for requestId %s: %s",
+                        requestId.c_str(), ctx->errorMessage.c_str());
+
+                    // Keep the lock when we check if this is the last message
+                    std::unique_lock<std::mutex> glock(m_completionStreamContextsMutex);
+                    m_completionStreamingContexts.erase(requestId);
+                    return false;
+                }
+
+                CompletionChunkChoice choice;
+                choice.index = 0;
+
+                // Check for completion state while still holding the lock
+                bool hasChunk = ctx->chunks.size() >= static_cast<size_t>(chunkIndex);
+                bool isFinished = ctx->finished;
+                bool isLastChunk = false;
+
+                if (hasChunk) {
+                    // Get the content for this chunk while holding the lock
+                    choice.text = ctx->chunks[chunkIndex - 1];
+
+                    // Determine if this is the last chunk while safely protected by the lock
+                    isLastChunk = isFinished && (ctx->chunks.size() == static_cast<size_t>(chunkIndex));
+                    choice.finish_reason = isLastChunk ? "stop" : ""; // Use empty string instead of nullptr
+                }
+                else if (isFinished) {
+                    // No chunk but job is finished - send empty final chunk
+                    choice.text = "";
+                    choice.finish_reason = "stop";
+                    isLastChunk = true;
+                }
+                else {
+                    // We have no chunk yet but still waiting
+                    choice.text = "";
+                    choice.finish_reason = ""; // Use empty string instead of nullptr
+                }
+
+                // Release the ctx lock before acquiring the global contexts lock to avoid deadlock
+                lock.unlock();
+
+                // Clean up if this is the last chunk
+                if (isLastChunk) {
+                    std::unique_lock<std::mutex> glock(m_completionStreamContextsMutex);
+                    m_completionStreamingContexts.erase(requestId);
+                }
+
+                outputChunk.choices.push_back(choice);
+                return !isLastChunk; // Return true if more chunks remain, false if this is the last one
+            }
+        }
+
         std::string getCurrentVariantForModel(const std::string& modelName) const 
         {
             auto it = m_modelVariantMap.find(modelName);
@@ -1076,12 +1507,11 @@ namespace Model
 
             if (modelIndex == m_currentModelIndex && variantType == m_currentVariantType)
             {
-                unloadModel();
+                unloadModel(m_models[modelIndex].name);
             }
 
             // Call the persistence layer to delete the file - passing the variant type instead of the variant
-            auto fut = m_persistence->deleteModelVariant(m_models[modelIndex], variantType);
-            fut.get(); // Wait for deletion to complete.
+            m_persistence->deleteModelVariant(m_models[modelIndex], variantType);
             return true;
         }
 
@@ -1090,6 +1520,28 @@ namespace Model
             m_currentVariantType = "";
             m_currentModelIndex = 0;
             m_modelLoaded = false;
+        }
+
+        void cleanupFailedEngine(const std::string& modelName) {
+            auto it = m_inferenceEngines.find(modelName);
+            if (it != m_inferenceEngines.end()) {
+                // Release resources if the engine implementation requires it
+                if (it->second) {
+                    it->second->unloadModel();
+                }
+                m_inferenceEngines.erase(it);
+            }
+        }
+
+        bool retryModelLoad(const std::string& modelName, const std::string& variantType) {
+            // First clean up any previous failed attempt
+            {
+                std::unique_lock<std::shared_mutex> lock(m_mutex);
+                cleanupFailedEngine(modelName);
+            }
+
+            // Then try to switch to this model again
+            return switchModel(modelName, variantType);
         }
 
 		bool isCurrentlyGenerating() const
@@ -1113,13 +1565,141 @@ namespace Model
 		bool isLoadInProgress() const
 		{
 			std::shared_lock<std::shared_mutex> lock(m_mutex);
+			return !m_loadInProgress.empty();
+		}
+
+		std::string getCurrentOnLoadingModel() const
+		{
+			std::shared_lock<std::shared_mutex> lock(m_mutex);
 			return m_loadInProgress;
 		}
 
 		bool isUnloadInProgress() const
 		{
 			std::shared_lock<std::shared_mutex> lock(m_mutex);
+			return !m_unloadInProgress.empty();
+		}
+
+		std::string getCurrentOnUnloadingModel() const
+		{
+			std::shared_lock<std::shared_mutex> lock(m_mutex);
 			return m_unloadInProgress;
+		}
+
+        bool isModelLoaded(const std::string& modelName) const
+        {
+            std::shared_lock<std::shared_mutex> lock(m_mutex);
+            auto it = m_inferenceEngines.find(modelName);
+            if (it != m_inferenceEngines.end())
+            {
+                return it->second != nullptr;
+            }
+            return false;
+        }
+
+        bool hasEnoughMemoryForModel(const std::string& modelName, float& memoryReqBuff, float& kvReqBuff) {
+            auto it = m_modelNameToIndex.find(modelName);
+            if (it == m_modelNameToIndex.end()) {
+                std::cerr << "[ModelManager] Model not found: " << modelName << "\n";
+                return false;
+            }
+
+            size_t modelIndex = it->second;
+            const auto& model = m_models[modelIndex];
+            const auto& variant = model.variants.at(
+                getCurrentVariantForModel(modelName)
+            );
+
+            // Calculate model size in bytes (convert from GB)
+            size_t modelSizeBytes = static_cast<size_t>(variant.size * 1024 * 1024 * 1024);
+
+            // Calculate KV cache size based on model parameters
+            // KV cache formula: 2 (key & value) * hidden_size * hidden_layers * max_seq_length * bytes_per_token
+            const size_t MAX_SEQUENCE_LENGTH = ModelLoaderConfigManager::getInstance().getConfig().n_ctx;
+            
+            float_t kvCacheSizeBytes = 4 *
+                model.hidden_size *
+                model.hidden_layers *
+                MAX_SEQUENCE_LENGTH;
+
+            // Update the buffers in MB
+			memoryReqBuff = (modelSizeBytes) / (1024 * 1024);
+			kvReqBuff = (kvCacheSizeBytes) / (1024 * 1024);
+
+            // Check if we have enough memory using SystemMonitor
+            auto& sysMonitor = SystemMonitor::getInstance();
+            bool hasEnoughMemory = sysMonitor.hasEnoughMemoryForModel(
+                modelSizeBytes,
+                kvCacheSizeBytes
+            );
+
+            return hasEnoughMemory;
+        }
+
+        bool hasEnoughMemoryForModel(const std::string& modelName) {
+            auto it = m_modelNameToIndex.find(modelName);
+            if (it == m_modelNameToIndex.end()) {
+                std::cerr << "[ModelManager] Model not found: " << modelName << "\n";
+                return false;
+            }
+
+            size_t modelIndex = it->second;
+            const auto& model = m_models[modelIndex];
+            const auto& variant = model.variants.at(
+                getCurrentVariantForModel(modelName)
+            );
+
+            // Calculate model size in bytes (convert from GB)
+            size_t modelSizeBytes = static_cast<size_t>(variant.size * 1024 * 1024 * 1024);
+
+            // Calculate KV cache size based on model parameters
+            // KV cache formula: 2 (key & value) * hidden_size * hidden_layers * max_seq_length * bytes_per_token
+            const size_t MAX_SEQUENCE_LENGTH = ModelLoaderConfigManager::getInstance().getConfig().n_ctx;
+            const size_t BYTES_PER_TOKEN = 2; // Assuming FP16 precision kv (2 bytes)
+
+            size_t kvCacheSizeBytes = 4 *
+                model.hidden_size *
+                model.hidden_layers *
+                MAX_SEQUENCE_LENGTH;
+
+            // Check if we have enough memory using SystemMonitor
+            auto& sysMonitor = SystemMonitor::getInstance();
+            bool hasEnoughMemory = sysMonitor.hasEnoughMemoryForModel(
+                modelSizeBytes,
+                kvCacheSizeBytes
+            );
+
+            return hasEnoughMemory;
+        }
+
+        bool addCustomModel(const Model::ModelData modelData)
+        {
+			std::unique_lock<std::shared_mutex> lock(m_mutex);
+
+            if (m_modelNameToIndex.count(modelData.name)) {
+                std::cerr << "[ModelManager] Model with name '" << modelData.name << "' already exists.\n";
+                return false;
+            }
+
+            if (modelData.variants.empty()) {
+                std::cerr << "[ModelManager] Cannot add model with no variants\n";
+                return false;
+            }
+
+			m_models.push_back(modelData);
+			m_modelNameToIndex[modelData.name] = m_models.size() - 1;
+
+			// save the model to persistence
+			m_persistence->saveModelData(modelData);
+
+			// Update the model variant map
+			m_modelVariantMap[modelData.name] = modelData.variants.begin()->first;
+			return true;
+		}
+
+		const bool isUsingGpu() const {
+			std::shared_lock<std::shared_mutex> lock(m_mutex);
+			return m_isVulkanBackend;
 		}
 
     private:
@@ -1129,7 +1709,6 @@ namespace Model
             , m_currentModelIndex(0)
             , m_inferenceLibHandle(nullptr)
             , m_createInferenceEnginePtr(nullptr)
-			, m_inferenceEngine(nullptr)
 			, m_modelLoaded(false)
             , m_modelGenerationInProgress(false)
         {
@@ -1141,9 +1720,9 @@ namespace Model
 
 			// Load inference engine backend and models synchronously
 			loadModels();
-			bool useVulkan = useVulkanBackend();
+			m_isVulkanBackend = useVulkanBackend();
 			std::string backendName = "InferenceEngineLib.dll";
-            if (useVulkan)
+            if (m_isVulkanBackend)
             {
                 backendName = "InferenceEngineLibVulkan.dll";
             }
@@ -1165,9 +1744,19 @@ namespace Model
                 m_initializationFuture.wait();
             }
 
-            if (m_inferenceEngine && m_destroyInferenceEnginePtr) {
-                m_destroyInferenceEnginePtr(m_inferenceEngine);
-                m_inferenceEngine = nullptr;
+			// Clean up all inference engines
+            if (!m_inferenceEngines.empty())
+            {
+                for (auto& [modelName, engine] : m_inferenceEngines)
+                {
+                    if (engine && m_destroyInferenceEnginePtr)
+                    {
+                        m_destroyInferenceEnginePtr(engine);
+                    }
+
+                    engine = nullptr;
+                    m_inferenceEngines.erase(modelName);
+                }
             }
 
             if (m_inferenceLibHandle) {
@@ -1193,48 +1782,44 @@ namespace Model
         }
 
         void startAsyncInitialization() {
-            m_initializationFuture = std::async(std::launch::async, [this]() {
-#ifdef DEBUG
-                std::cout << "[ModelManager] Initializing model manager" << std::endl;
-#endif
+            m_initializationFuture = m_threadPool.enqueue([this]() {
+                auto& sysMonitor = SystemMonitor::getInstance();
+                sysMonitor.update();
 
-                // Run model loading and Vulkan check in parallel
-                auto modelsFuture = std::async(std::launch::async, &ModelManager::loadModels, this);
-                auto vulkanFuture = std::async(std::launch::async, &ModelManager::useVulkanBackend, this);
-
-                modelsFuture.get();
-                bool useVulkan = vulkanFuture.get();
-
+                loadModels();  // blocking
+                m_isVulkanBackend = useVulkanBackend();
                 std::string backendName = "InferenceEngineLib.dll";
-                if (useVulkan) {
-                    backendName = "InferenceEngineLibVulkan.dll";
+
+                if (m_isVulkanBackend)
+                {
+					backendName = "InferenceEngineLibVulkan.dll";
+                    SystemMonitor::getInstance().initializeGpuMonitoring();
                 }
 
-#ifdef DEBUG
-                std::cout << "[ModelManager] Using backend: " << backendName << std::endl;
-#endif
-
-                if (!loadInferenceEngineDynamically(backendName.c_str())) {
-                    std::cerr << "[ModelManager] Failed to load inference engine for backend: "
-                        << backendName << std::endl;
+                if (!loadInferenceEngineDynamically(backendName)) {
+                    std::cerr << "Failed to load inference engine\n";
                     return;
                 }
 
+                std::optional<std::string> name;
                 {
-                    std::unique_lock<std::shared_mutex> lock(m_mutex);
-                    m_loadInProgress = true;
+                    std::unique_lock lock(m_mutex);
+                    if (m_currentModelName.has_value()) {
+                        m_loadInProgress = m_currentModelName.value();
+                        name = m_currentModelName;
+                    }
                 }
 
-                // Start async model loading
-                auto modelLoadFuture = loadModelIntoEngineAsync();
-                if (!modelLoadFuture.get()) { // Wait for async load to complete
-                    resetModelState();
+                if (name.has_value()) {
+                    auto future = loadModelIntoEngineAsync(name.value());
+					if (!future.get()) {
+						std::cerr << "Failed to load model into engine\n";
+						resetModelState();
+					}
                 }
 
-                {
-                    std::unique_lock<std::shared_mutex> lock(m_mutex);
-                    m_loadInProgress = false;
-                }
+                std::unique_lock lock(m_mutex);
+                m_loadInProgress.clear();
                 });
         }
 
@@ -1420,6 +2005,8 @@ namespace Model
             if (!variant)
                 return;
 
+			const std::string modelName = m_models[modelIndex].name;
+
             variant->downloadProgress = 0.01f;  // 0% looks like no progress
 
             // Begin the asynchronous download - passing the variant type rather than the variant itself
@@ -1427,7 +2014,7 @@ namespace Model
 
             // Chain a continuation that waits for the download to complete.
             m_downloadFutures.emplace_back(std::async(std::launch::async,
-                [this, modelIndex, variantType, fut = std::move(downloadFuture)]() mutable {
+                [this, modelIndex, modelName, variantType, fut = std::move(downloadFuture)]() mutable {
                     // Wait for the download to finish.
                     fut.wait();
 
@@ -1439,7 +2026,7 @@ namespace Model
                             // Unlock before loading the model.
                             lock.unlock();
 
-                            auto loadFuture = loadModelIntoEngineAsync();
+                            auto loadFuture = loadModelIntoEngineAsync(modelName);
                             if (!loadFuture.get())
                             {
                                 std::unique_lock<std::shared_mutex> restoreLock(m_mutex);
@@ -1697,70 +2284,60 @@ namespace Model
 				<< backendName << std::endl;
 #endif
 
-			m_inferenceEngine = m_createInferenceEnginePtr();
-			if (!m_inferenceEngine) {
-				std::cerr << "[ModelManager] Failed to get InferenceEngine instance from "
-					<< backendName << std::endl;
-				return false;
-			}
 #endif
             return true;
         }
 
-        std::future<bool> ModelManager::loadModelIntoEngineAsync() {
-            // Capture needed data under lock
+        std::future<bool> loadModelIntoEngineAsync(const std::string& modelName) {
+            if (!hasEnoughMemoryForModel(modelName)) {
+                std::promise<bool> promise;
+                promise.set_value(false);
+                return promise.get_future();
+            }
+
             std::optional<std::string> modelDir;
             {
-                std::unique_lock<std::shared_mutex> lock(m_mutex);
-
-                if (!m_currentModelName) {
-                    std::cerr << "[ModelManager] No model selected\n";
-                    m_modelLoaded = false;
-                    return std::async(std::launch::deferred, [] { return false; });
-                }
-
-                ModelVariant* variant = getVariantLocked(m_currentModelIndex, m_currentVariantType);
-                if (!variant || !variant->isDownloaded || !std::filesystem::exists(variant->path)) {
-                    m_modelLoaded = false;
-                    return std::async(std::launch::deferred, [] { return false; });
+                std::shared_lock lock(m_mutex);
+                int index = m_modelNameToIndex[modelName];
+                auto variant = getVariantLocked(index, getCurrentVariantForModel(modelName));
+                if (!variant || !variant->isDownloaded) {
+                    std::promise<bool> promise;
+                    promise.set_value(false);
+                    return promise.get_future();
                 }
 
                 modelDir = std::filesystem::absolute(
-                    variant->path.substr(0, variant->path.find_last_of("/\\"))
-                ).string();
+                    variant->path.substr(0, variant->path.find_last_of("/\\"))).string();
             }
 
-            // Launch heavy loading in async task
-            return std::async(std::launch::async, [this, modelDir]() {
-                try {
-                    bool success = m_inferenceEngine->loadModel(modelDir->c_str(),
-                        ModelLoaderConfigManager::getInstance().getConfig());
+            return m_threadPool.enqueue([this, modelName, modelDir]() {
+				std::cout << "[ModelManager] size of inference engines: " << sizeof(m_inferenceEngines) << std::endl;
 
-                    {
-                        std::unique_lock<std::shared_mutex> lock(m_mutex);
-                        m_modelLoaded = success;
-                    }
+                auto engine = m_createInferenceEnginePtr();
+                if (!engine) return false;
 
-                    if (success) {
-                        std::cout << "[ModelManager] Loaded model: " << *modelDir << "\n";
-                    }
-                    return success;
+                bool success = engine->loadModel(modelDir->c_str(), ModelLoaderConfigManager::getInstance().getConfig());
+                if (success) {
+                    std::unique_lock lock(m_mutex);
+                    m_inferenceEngines[modelName] = engine;
+                    std::cout << "[ModelManager] size of inference engines: " << sizeof(m_inferenceEngines) << std::endl;
+                    m_modelLoaded = true;
                 }
-                catch (const std::exception& e) {
-                    std::cerr << "[ModelManager] Load failed: " << e.what() << "\n";
-                    std::unique_lock<std::shared_mutex> lock(m_mutex);
-                    m_modelLoaded = false;
-                    return false;
+                else {
+                    std::cerr << "Model load failed\n";
                 }
+
+                return success;
                 });
         }
 
-        std::future<bool> ModelManager::unloadModelAsync() {
+        std::future<bool> ModelManager::unloadModelAsync(const std::string modelName) {
             // Capture current loaded state under lock
             bool isLoaded;
             {
                 std::unique_lock<std::shared_mutex> lock(m_mutex);
-                isLoaded = m_modelLoaded;
+				// Check if the model is loaded in m_inferenceEngines
+				isLoaded = m_inferenceEngines.find(modelName) != m_inferenceEngines.end();
 
                 if (!isLoaded) {
                     std::cerr << "[ModelManager] No model loaded to unload\n";
@@ -1769,9 +2346,12 @@ namespace Model
             }
 
             // Launch heavy unloading in async task
-            return std::async(std::launch::async, [this]() {
+            return std::async(std::launch::async, [this, modelName]() {
                 try {
-                    bool success = m_inferenceEngine->unloadModel();
+                    bool success = m_inferenceEngines.at(modelName)->unloadModel();
+					// delete the engine instance
+					m_destroyInferenceEnginePtr(m_inferenceEngines.at(modelName));
+					m_inferenceEngines.erase(modelName);
 
                     {
                         std::unique_lock<std::shared_mutex> lock(m_mutex);
@@ -1797,15 +2377,19 @@ namespace Model
 
         void stopAllJobs()
         {
-            std::vector<int> jobIdsCopy;
+            std::vector<int> jobs;
             {
-                std::shared_lock<std::shared_mutex> lock(m_mutex);
-                jobIdsCopy = m_jobIds;
+                std::shared_lock lock(m_mutex);
+                jobs = m_jobIds;
+
+                for (int id : jobs) {
+                    m_activeJobs[id] = false; // Mark jobs as inactive
+                }
             }
 
-            for (auto jobId : jobIdsCopy)
-            {
-                stopJob(jobId);
+            for (int id : jobs) {
+                for (auto& [name, engine] : m_inferenceEngines)
+                    engine->stopJob(id);
             }
         }
 
@@ -1845,6 +2429,41 @@ namespace Model
             return response;
         }
 
+        static CompletionResponse convertToCompletionResponse(const CompletionRequest& request, const CompletionResult& result) {
+            CompletionResponse response;
+            response.model = request.model;
+
+            // Create a choice with the generated text
+            CompletionChoice choice;
+            choice.index = 0;
+            choice.text = result.text;
+            choice.finish_reason = "stop"; // Assuming completion finished normally
+
+            response.choices.push_back(choice);
+
+            // Set usage statistics - this is an estimation
+            int promptLength = 0;
+            if (std::holds_alternative<std::string>(request.prompt)) {
+                promptLength = std::get<std::string>(request.prompt).size() / 4; // Rough token estimation
+            }
+            else if (std::holds_alternative<std::vector<std::string>>(request.prompt)) {
+                for (const auto& p : std::get<std::vector<std::string>>(request.prompt)) {
+                    promptLength += p.size() / 4;
+                }
+            }
+
+            int completionLength = result.text.size() / 4; // Rough token estimation
+
+            response.usage.prompt_tokens = promptLength;
+            response.usage.completion_tokens = completionLength;
+            response.usage.total_tokens = promptLength + completionLength;
+
+            return response;
+        }
+
+        ThreadPool m_threadPool{ std::max(4u, std::thread::hardware_concurrency() - 1) };
+        std::unordered_map<int, std::atomic<bool>> m_activeJobs;
+
         mutable std::shared_mutex                       m_mutex;
         std::unique_ptr<IModelPersistence>              m_persistence;
         std::vector<ModelData>                          m_models;
@@ -1855,14 +2474,16 @@ namespace Model
         std::vector<std::future<void>>                  m_downloadFutures;
         std::future<bool>                               m_engineLoadFuture;
         std::future<void>                               m_initializationFuture;
+		std::future<void>                               m_persistenceFuture;
         std::vector<std::future<void>>                  m_loadFutures;
         std::vector<std::future<void>>                  m_unloadFutures;
-		std::atomic<bool>                               m_unloadInProgress{ false };
-        std::atomic<bool>                               m_loadInProgress{ false };
+		std::string                                     m_unloadInProgress;
+        std::string                                     m_loadInProgress;
         std::unordered_map<std::string, std::string>    m_modelVariantMap;
         std::atomic<bool>                               m_modelLoaded{ false };
 		std::atomic<bool>                               m_modelGenerationInProgress{ false };
         std::vector<int>                                m_jobIds;
+		bool                                            m_isVulkanBackend{ false };
 
 #ifdef _WIN32
         HMODULE m_inferenceLibHandle = nullptr;
@@ -1871,10 +2492,10 @@ namespace Model
         CreateInferenceEngineFunc*  m_createInferenceEnginePtr  = nullptr;
         DestroyInferenceEngineFunc* m_destroyInferenceEnginePtr = nullptr;
 
-        IInferenceEngine* m_inferenceEngine = nullptr;
+		std::map<const std::string, IInferenceEngine*> m_inferenceEngines;
 
 		// Server related
-        struct StreamingContext {
+        struct ChatCompletionStreamingContext {
             std::mutex mtx;
             std::condition_variable cv;
             std::vector<std::string> chunks;
@@ -1885,8 +2506,23 @@ namespace Model
             bool error = false;
         };
         std::mutex m_streamContextsMutex;
-        std::unordered_map<std::string, std::shared_ptr<StreamingContext>>
+        std::unordered_map<std::string, std::shared_ptr<ChatCompletionStreamingContext>>
             m_streamingContexts;
+
+        struct CompletionStreamingContext {
+            std::mutex mtx;
+            std::condition_variable cv;
+            std::string model;
+            int jobId = -1;
+            std::vector<std::string> chunks;
+            bool finished = false;
+            bool error = false;
+            std::string errorMessage;
+            std::string fullText; // Accumulated full text
+        };
+        std::mutex m_completionStreamContextsMutex;
+        std::unordered_map<std::string, std::shared_ptr<CompletionStreamingContext>> 
+            m_completionStreamingContexts;
     };
 
     inline void initializeModelManager(const bool async = true)

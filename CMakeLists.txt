@@ -24,13 +24,6 @@ option(DEBUG "Build with debugging information" OFF)
 
 # ==== External Dependencies ====
 
-# OpenGL
-find_package(OpenGL REQUIRED)
-if(NOT OpenGL_FOUND)
-    message(FATAL_ERROR "OpenGL not found")
-endif()
-message(STATUS "Found OpenGL: ${OpenGL_INCLUDE_DIR}")
-
 # OpenSSL
 find_package(OpenSSL REQUIRED)
 if(NOT OpenSSL_FOUND)
@@ -112,7 +105,6 @@ target_compile_definitions(kolosal_lib PUBLIC
 target_include_directories(kolosal_lib PUBLIC
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
-    ${OpenGL_INCLUDE_DIR}
     ${EXTERNAL_DIR}/glad/include
     ${EXTERNAL_DIR}/icons
     ${EXTERNAL_DIR}/nlohmann
@@ -131,7 +123,6 @@ target_include_directories(kolosal_lib PUBLIC
 # Platform-specific library dependencies
 if(WIN32)
     target_link_libraries(kolosal_lib PUBLIC
-        ${OpenGL_LIBRARIES}
         glad
         nfd
         Dwmapi
@@ -153,12 +144,11 @@ if(WIN32)
     )
 else()
     target_link_libraries(kolosal_lib PUBLIC
-        ${OpenGL_LIBRARIES}
         glad
         nfd
         OpenSSL::SSL
     )
-    
+
     target_compile_definitions(kolosal_lib PUBLIC
         IMGUI_IMPL_OPENGL_LOADER_GLAD
         ${FONT_DEFINITIONS}

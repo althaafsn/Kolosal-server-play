@@ -10,7 +10,6 @@ using json = nlohmann::json;
 
 namespace Model
 {
-    // ModelVariant structure remains mostly the same
     struct ModelVariant {
         std::string type;
         std::string path;
@@ -19,6 +18,7 @@ namespace Model
         double downloadProgress;
         int lastSelected;
         std::atomic_bool cancelDownload{ false };
+        float size;
 
         // Default constructor is fine.
         ModelVariant() = default;
@@ -31,7 +31,8 @@ namespace Model
             , isDownloaded(other.isDownloaded)
             , downloadProgress(other.downloadProgress)
             , lastSelected(other.lastSelected)
-            , cancelDownload(false) // Always initialize to false on copy.
+            , cancelDownload(false)
+			, size(other.size)
         {
         }
 
@@ -44,7 +45,8 @@ namespace Model
                 isDownloaded = other.isDownloaded;
                 downloadProgress = other.downloadProgress;
                 lastSelected = other.lastSelected;
-                cancelDownload = false; // Reinitialize the cancellation flag.
+                cancelDownload = false;
+				size = other.size;
             }
             return *this;
         }
@@ -58,7 +60,8 @@ namespace Model
             {"downloadLink", v.downloadLink},
             {"isDownloaded", v.isDownloaded},
             {"downloadProgress", v.downloadProgress},
-            {"lastSelected", v.lastSelected} };
+            {"lastSelected", v.lastSelected},
+            {"size", v.size} };
     }
 
     inline void from_json(const nlohmann::json& j, ModelVariant& v)
@@ -69,6 +72,7 @@ namespace Model
         j.at("isDownloaded").get_to(v.isDownloaded);
         j.at("downloadProgress").get_to(v.downloadProgress);
         j.at("lastSelected").get_to(v.lastSelected);
+		j.at("size").get_to(v.size);
     }
 
     // Refactored ModelData to use a map of variants
@@ -77,10 +81,17 @@ namespace Model
         std::string name;
         std::string author;
         std::map<std::string, ModelVariant> variants;
+        float_t hidden_size;
+        float_t attention_heads;
+        float_t hidden_layers;
+        float_t kv_heads;
 
         // Constructor with no variants
-        ModelData(const std::string& name = "", const std::string& author = "")
-            : name(name), author(author) {
+        ModelData(const std::string& name = "", const std::string& author = "",
+            const float_t hidden_size = 0, const float_t attention_heads = 0,
+            const float_t hidden_layers = 0, const float_t kv_heads = 0)
+            : name(name), author(author), hidden_size(hidden_size), attention_heads(attention_heads)
+            , hidden_layers(hidden_layers), kv_heads(kv_heads) {
         }
 
         // Add a variant to the model
@@ -111,7 +122,11 @@ namespace Model
         j = nlohmann::json{
             {"name", m.name},
             {"author", m.author},
-            {"variants", m.variants}
+            {"variants", m.variants},
+			{"hidden_size", m.hidden_size},
+			{"attention_heads", m.attention_heads},
+			{"hidden_layers", m.hidden_layers},
+			{"kv_heads", m.kv_heads}
         };
     }
 
@@ -120,5 +135,9 @@ namespace Model
         j.at("name").get_to(m.name);
         j.at("author").get_to(m.author);
         j.at("variants").get_to(m.variants);
+		j.at("hidden_size").get_to(m.hidden_size);
+		j.at("attention_heads").get_to(m.attention_heads);
+		j.at("hidden_layers").get_to(m.hidden_layers);
+		j.at("kv_heads").get_to(m.kv_heads);
     }
 } // namespace Model
