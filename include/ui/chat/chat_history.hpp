@@ -243,7 +243,7 @@ private:
 
         // Stop current generation if running.
         if (modelManager.isCurrentlyGenerating()) {
-            modelManager.stopJob(chatManager.getCurrentJobId(), modelManager.getCurrentModelName().value());
+            modelManager.stopJob(chatManager.getCurrentJobId(), modelManager.getCurrentModelName().value(), modelManager.getCurrentVariantType());
 
             while (true)
             {
@@ -316,7 +316,7 @@ private:
         );
 
         int jobId = modelManager.startChatCompletionJob(completionParams, chatStreamingCallback, 
-            modelManager.getCurrentModelName().value());
+            modelManager.getCurrentModelName().value(), modelManager.getCurrentVariantType());
         if (!chatManager.setCurrentJobId(jobId)) {
             std::cerr << "[ChatSection] Failed to set the current job ID.\n";
         }
@@ -419,7 +419,7 @@ private:
                 modelNameConfig.id = "##modelNameMessage" + std::to_string(index);
                 modelNameConfig.label = msg.modelName;
                 modelNameConfig.icon = ICON_CI_SPARKLE;
-                modelNameConfig.size = ImVec2(modelNameWidth, 0);
+                modelNameConfig.size = ImVec2(modelNameWidth + 24.0F, 0);
                 modelNameConfig.fontSize = FontsManager::SM;
                 modelNameConfig.alignment = Alignment::LEFT;
                 modelNameConfig.state = ButtonState::DISABLED;
