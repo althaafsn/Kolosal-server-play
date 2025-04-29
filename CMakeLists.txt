@@ -24,6 +24,11 @@ option(DEBUG "Build with debugging information" OFF)
 
 # ==== External Dependencies ====
 
+set(CMAKE_PREFIX_PATH "${EXTERNAL_DIR}/OpenSSL/3.4.0" ${CMAKE_PREFIX_PATH})
+
+find_package(OpenSSL REQUIRED)
+
+
 # OpenSSL
 find_package(OpenSSL REQUIRED)
 if(NOT OpenSSL_FOUND)
