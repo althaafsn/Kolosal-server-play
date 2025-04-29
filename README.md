@@ -20,7 +20,7 @@ https://github.com/user-attachments/assets/589cfb48-f806-493d-842b-3b6953b64e79
 
 3. **Wide Model Compatibility**  
    - Supports popular models like **Mistral**, **LLaMA**, **Qwen**, and many more  
-   - Powered by the [Genta Personal Engine](https://genta.tech) built on top of [Llama.cpp](https://github.com/ggerganov/llama.cpp)
+   - Powered by the [Genta Personal Engine](https://github.com/genta-technology/inference-personal) built on top of [Llama.cpp](https://github.com/ggerganov/llama.cpp), you can see the source code at [https://github.com/genta-technology/inference-personal](https://github.com/genta-technology/inference-personal)
 
 4. **Easy Dataset Generation & Training**  
    - Build custom datasets with minimal overhead  
