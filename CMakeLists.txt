@@ -24,10 +24,32 @@ option(DEBUG "Build with debugging information" OFF)
 
 # ==== External Dependencies ====
 
+<<<<<<< HEAD
 set(CMAKE_PREFIX_PATH "${EXTERNAL_DIR}/OpenSSL/3.4.0" ${CMAKE_PREFIX_PATH})
 
 find_package(OpenSSL REQUIRED)
 
+=======
+# utfcpp
+include(FetchContent)
+FetchContent_Declare(
+    utfcpp
+    GIT_REPOSITORY https://github.com/nemtrif/utfcpp.git
+    GIT_TAG v4.0.6
+)
+FetchContent_MakeAvailable(utfcpp)
+
+# Freetype (./external/freetype/lib ./external/freetype/include ./external/freetype/bin)
+set(CMAKE_PREFIX_PATH "${EXTERNAL_DIR}/freetype" ${CMAKE_PREFIX_PATH})
+find_package(Freetype REQUIRED)
+if(NOT FREETYPE_FOUND)
+    message(FATAL_ERROR "Freetype not found")
+endif()
+message(STATUS "Found Freetype: ${FREETYPE_INCLUDE_DIRS}")
+message(STATUS "    - Freetype Libraries: ${FREETYPE_LIBRARIES}")
+set(FREETYPE_DLL_DIR "${FREETYPE_INCLUDE_DIRS}/../bin")
+message(STATUS "    - Freetype DLL Directory: ${FREETYPE_DLL_DIR}")
+>>>>>>> 6f84faf4acecf4354407bd199bf7e665ed465f10
 
 # OpenSSL
 find_package(OpenSSL REQUIRED)
@@ -40,9 +62,8 @@ message(STATUS "    - OpenSSL Libraries: ${OPENSSL_LIBRARIES}")
 set(OPENSSL_DLL_DIR "${OPENSSL_INCLUDE_DIR}/../bin")
 message(STATUS "    - OpenSSL DLL Directory: ${OPENSSL_DLL_DIR}")
 
-# GLAD
-add_library(glad STATIC ${EXTERNAL_DIR}/glad/src/glad.c)
-target_include_directories(glad PUBLIC ${EXTERNAL_DIR}/glad/include)
+# DirectX SDK (using Windows SDK)
+# DirectX 10 components are included in Windows SDK, no need for separate find_package
 
 # Native File Dialog Extended
 add_subdirectory(${EXTERNAL_DIR}/nativefiledialog-extended)
@@ -72,6 +93,11 @@ set(MARKDOWN_RENDERER
     ${EXTERNAL_DIR}/imgui_md/imgui_md.cpp
 )
 
+# ImGuiTextSelect
+set(IMGUI_TEXT_SELECT
+    ${EXTERNAL_DIR}/ImGuiTextSelect/textselect.cpp
+)
+
 # ==== ImGui Configuration ====
 set(IMGUI_SOURCES
     ${IMGUI_DIR}/imgui.cpp
@@ -79,24 +105,27 @@ set(IMGUI_SOURCES
     ${IMGUI_DIR}/imgui_draw.cpp
     ${IMGUI_DIR}/imgui_tables.cpp
     ${IMGUI_DIR}/imgui_widgets.cpp
+    ${IMGUI_DIR}/misc/freetype/imgui_freetype.cpp
     ${IMGUI_DIR}/backends/imgui_impl_win32.cpp
-    ${IMGUI_DIR}/backends/imgui_impl_opengl3.cpp
+    ${IMGUI_DIR}/backends/imgui_impl_dx10.cpp  # Changed from OpenGL3 to DirectX 10
 )
 
 # ==== Font Definitions ====
 set(FONT_DEFINITIONS
     IMGUI_FONT_PATH_INTER_REGULAR="fonts/Inter-Regular.ttf"
-    IMGUI_FONT_PATH_FIRACODE_REGULAR="fonts/FiraCode-Regular.ttf"
     IMGUI_FONT_PATH_INTER_BOLD="fonts/Inter-Bold.ttf"
     IMGUI_FONT_PATH_INTER_BOLDITALIC="fonts/Inter-BoldItalic.ttf"
     IMGUI_FONT_PATH_INTER_ITALIC="fonts/Inter-Italic.ttf"
+    IMGUI_FONT_PATH_FIRACODE_REGULAR="fonts/FiraCode-Regular.ttf"
     IMGUI_FONT_PATH_CODICON="fonts/codicon.ttf"
+    IMGUI_FONT_PATH_NOTO_EMOJI="fonts/seguiemj-1.35-flat.ttf"
 )
 
 # ==== Kolosal Library ====
 add_library(kolosal_lib STATIC
     ${IMGUI_SOURCES}
     ${MARKDOWN_RENDERER}
+    ${IMGUI_TEXT_SELECT}
 )
 
 # Set definitions
@@ -110,7 +139,6 @@ target_compile_definitions(kolosal_lib PUBLIC
 target_include_directories(kolosal_lib PUBLIC
     ${IMGUI_DIR}
     ${IMGUI_DIR}/backends
-    ${EXTERNAL_DIR}/glad/include
     ${EXTERNAL_DIR}/icons
     ${EXTERNAL_DIR}/nlohmann
     ${EXTERNAL_DIR}/nativefiledialog-extended/src/include
@@ -119,43 +147,44 @@ target_include_directories(kolosal_lib PUBLIC
     ${EXTERNAL_DIR}/md4c/src
     ${EXTERNAL_DIR}/imgui_md
     ${EXTERNAL_DIR}/imspinner
+    ${EXTERNAL_DIR}/ImGuiTextSelect
     ${CMAKE_SOURCE_DIR}/include
     ${CMAKE_SOURCE_DIR}/assets
     ${CMAKE_SOURCE_DIR}/kolosal-server/include
+    ${FREETYPE_INCLUDE_DIRS}
     ${CURL_INCLUDE_DIR}
 )
 
 # Platform-specific library dependencies
 if(WIN32)
     target_link_libraries(kolosal_lib PUBLIC
-        glad
         nfd
         Dwmapi
         UxTheme
         Shcore
-        opengl32
+        d3d10        # DirectX 10 library
+        dxgi         # DXGI library
         user32
         gdi32
         shell32
         OpenSSL::SSL
+        utf8cpp
+        ${FREETYPE_LIBRARIES}
         ${CURL_LIBRARIES}
     )
     
     target_compile_definitions(kolosal_lib PUBLIC
-        IMGUI_IMPL_OPENGL_LOADER_GLAD
         UNICODE
         ${FONT_DEFINITIONS}
         KOLOSAL_LOGO_PATH="assets/logo.png"
     )
 else()
     target_link_libraries(kolosal_lib PUBLIC
-        glad
         nfd
         OpenSSL::SSL
     )
 
     target_compile_definitions(kolosal_lib PUBLIC
-        IMGUI_IMPL_OPENGL_LOADER_GLAD
         ${FONT_DEFINITIONS}
         KOLOSAL_LOGO_PATH="assets/logo.png"
     )
@@ -239,4 +268,13 @@ add_custom_command(
         "${EXTERNAL_DIR}/genta-personal/bin/InferenceEngineLibVulkan.dll"
         "$<TARGET_FILE_DIR:KolosalDesktop>"
     COMMENT "Copying Inference Engine DLLs to output directory"
+)
+
+# Copy Freetype DLLs
+add_custom_command(
+    TARGET KolosalDesktop POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+        "${FREETYPE_DLL_DIR}/freetype.dll"
+        "$<TARGET_FILE_DIR:KolosalDesktop>"
+    COMMENT "Copying Freetype DLLs to output directory"
 )

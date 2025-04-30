@@ -64,12 +64,12 @@ struct LoadingParameters
 	int n_ctx = 4096;
 	int n_keep = 2048;
 	bool use_mlock = true;
-	bool use_mmap = false;
+	bool use_mmap = true;
 	bool cont_batching = true;
 	bool warmup = false;
 	int n_parallel = 1;
 	int n_gpu_layers = 100;
-	int n_batch = 256;
+	int n_batch = 4096;
 };
 
 #endif // TYPES_H
