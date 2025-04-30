@@ -24,12 +24,6 @@ option(DEBUG "Build with debugging information" OFF)
 
 # ==== External Dependencies ====
 
-<<<<<<< HEAD
-set(CMAKE_PREFIX_PATH "${EXTERNAL_DIR}/OpenSSL/3.4.0" ${CMAKE_PREFIX_PATH})
-
-find_package(OpenSSL REQUIRED)
-
-=======
 # utfcpp
 include(FetchContent)
 FetchContent_Declare(
@@ -49,9 +43,10 @@ message(STATUS "Found Freetype: ${FREETYPE_INCLUDE_DIRS}")
 message(STATUS "    - Freetype Libraries: ${FREETYPE_LIBRARIES}")
 set(FREETYPE_DLL_DIR "${FREETYPE_INCLUDE_DIRS}/../bin")
 message(STATUS "    - Freetype DLL Directory: ${FREETYPE_DLL_DIR}")
->>>>>>> 6f84faf4acecf4354407bd199bf7e665ed465f10
+
 
 # OpenSSL
+set(CMAKE_PREFIX_PATH "${EXTERNAL_DIR}/OpenSSL/3.4.0" ${CMAKE_PREFIX_PATH})
 find_package(OpenSSL REQUIRED)
 if(NOT OpenSSL_FOUND)
     message(FATAL_ERROR "OpenSSL not found")
